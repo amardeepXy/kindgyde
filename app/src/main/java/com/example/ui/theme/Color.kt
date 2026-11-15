@@ -1,0 +1,25 @@
+package com.example.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+val WarmIvory = Color(0xFFFFFBF5)
+val WarmSand = Color(0xFFFFF4E6)
+val WarmSurface = Color(0xFFFFFFFF)
+val EspressoInk = Color(0xFF1C1917)
+val WarmSlate = Color(0xFF44403C)
+val TerracottaPrimary = Color(0xFFC2410C)
+val TerracottaBright = Color(0xFFEA580C)
+val TerracottaContainer = Color(0xFFFFEDD5)
+val TerracottaOnContainer = Color(0xFF7C2D12)
+val SageSuccess = Color(0xFF15803D)
+val SageContainer = Color(0xFFDCFCE7)
+val SageOnContainer = Color(0xFF14532D)
+val AmberCaution = Color(0xFFB45309)
+val AmberContainer = Color(0xFFFEF3C7)
+val AmberOnContainer = Color(0xFF78350F)
+val CrimsonSos = Color(0xFFB91C1C)
+val CrimsonContainer = Color(0xFFFEE2E2)
+val CrimsonOnContainer = Color(0xFF7F1D1D)
+val WarmBorder = Color(0xFFE7D8C9)
+val DarkOverlayBg = Color(0xFF1C1917)
+val DarkOverlayText = Color(0xFFFFFBF5)

@@ -1,0 +1,448 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidMemberArray(arr) {
+      return arr is list && arr.size() >= 1 && arr.size() <= 10 && arr[0] is string;
+    }
+
+    function isValidCaregiverArray(arr) {
+      return arr is list && arr.size() <= 9 && (arr.size() == 0 || arr[0] is string);
+    }
+
+    function isValidCareCircle(data) {
+      return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+             isValidCaregiverArray(data.caregiverUids) &&
+             isValidMemberArray(data.memberUids) &&
+             data.ownerUid in data.memberUids &&
+             data.inviteCode is string && data.inviteCode.size() >= 4 && data.inviteCode.size() <= 16 &&
+             data.caregiverPinHash is string && data.caregiverPinHash.size() == 64 &&
+             data.seniorName is string && data.seniorName.size() >= 1 && data.seniorName.size() <= 60 &&
+             data.homeAddress is string && data.homeAddress.size() <= 200 &&
+             data.homeLat is number && data.homeLat >= -90 && data.homeLat <= 90 &&
+             data.homeLng is number && data.homeLng >= -180 && data.homeLng <= 180 &&
+             data.emergencyContactName is string && data.emergencyContactName.size() <= 60 &&
+             data.emergencyContactPhone is string && data.emergencyContactPhone.size() <= 30 &&
+             (!('lastCheckInLabel' in data) || (data.lastCheckInLabel is string && data.lastCheckInLabel.size() <= 120)) &&
+             (!('lastMood' in data) || (data.lastMood is string && data.lastMood.size() <= 40));
+    }
+
+    function isValidInviteCode(data) {
+      return data.circleId is string && isValidId(data.circleId) &&
+             data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+             data.caregiverPinHash is string && data.caregiverPinHash.size() == 64;
+    }
+
+    function isValidCareTask(data) {
+      return isValidMemberArray(data.memberUids) &&
+             data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 40 &&
+             data.dueTimeLabel is string && data.dueTimeLabel.size() <= 40 &&
+             data.completed is bool &&
+             data.createdBy in ['senior', 'ai', 'caregiver'];
+    }
+
+    function isValidCalendarEvent(data) {
+      return isValidMemberArray(data.memberUids) &&
+             data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.dateLabel is string && data.dateLabel.size() >= 1 && data.dateLabel.size() <= 40 &&
+             data.timeLabel is string && data.timeLabel.size() <= 40 &&
+             data.location is string && data.location.size() <= 120 &&
+             data.notes is string && data.notes.size() <= 300 &&
+             data.createdBy in ['senior', 'ai', 'caregiver'];
+    }
+
+    function isValidMedication(data) {
+      return isValidMemberArray(data.memberUids) &&
+             data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.dosage is string && data.dosage.size() <= 60 &&
+             data.scheduleSlot in ['Morning', 'Afternoon', 'Evening', 'Bedtime'] &&
+             data.takenToday is bool &&
+             data.lastTakenLabel is string && data.lastTakenLabel.size() <= 60;
+    }
+
+    function isValidPhoto(data) {
+      return isValidMemberArray(data.memberUids) &&
+             data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+             data.caption is string && data.caption.size() >= 1 && data.caption.size() <= 200 &&
+             data.sharedBy is string && data.sharedBy.size() >= 1 && data.sharedBy.size() <= 60 &&
+             data.thumbnailBase64 is string && data.thumbnailBase64.size() <= 350000;
+    }
+
+    function isValidVoiceNote(data) {
+      return isValidMemberArray(data.memberUids) &&
+             data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 60 &&
+             data.durationSeconds is int && data.durationSeconds >= 0 && data.durationSeconds <= 600 &&
+             data.transcript is string && data.transcript.size() <= 1000 &&
+             data.isFromCaregiver is bool;
+    }
+
+    function isValidSafePlace(data) {
+      return isValidMemberArray(data.memberUids) &&
+             data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+             data.label is string && data.label.size() >= 1 && data.label.size() <= 80 &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 40 &&
+             data.address is string && data.address.size() <= 200 &&
+             data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+             data.longitude is number && data.longitude >= -180 && data.longitude <= 180;
+    }
+
+    function isValidSafetyAlert(data) {
+      return isValidMemberArray(data.memberUids) &&
+             data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+             data.type in ['sos', 'scam_warning', 'stuck_help', 'check_in'] &&
+             data.message is string && data.message.size() >= 1 && data.message.size() <= 400 &&
+             data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+             data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+             data.resolved is bool;
+    }
+
+    function isValidConversationMessage(data) {
+      return isValidMemberArray(data.memberUids) &&
+             data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+             data.role in ['user', 'model'] &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 4000 &&
+             data.guideStepTitle is string && data.guideStepTitle.size() <= 200 &&
+             data.stepNumber is int && data.stepNumber >= 0 && data.stepNumber <= 30 &&
+             data.totalSteps is int && data.totalSteps >= 0 && data.totalSteps <= 30 &&
+             data.isStuckFlagged is bool;
+    }
+
+    function isParentCircleMember(circleId) {
+      return exists(/databases/$(database)/documents/careCircles/$(circleId)) &&
+             request.auth.uid in get(/databases/$(database)/documents/careCircles/$(circleId)).data.memberUids;
+    }
+
+    function matchesParentMembers(circleId, data) {
+      return isParentCircleMember(circleId) &&
+             data.memberUids == get(/databases/$(database)/documents/careCircles/$(circleId)).data.memberUids;
+    }
+
+    match /inviteCodes/{code} {
+      allow get: if isSignedIn() && isValidId(code);
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+                       isValidId(code) &&
+                       incoming().ownerUid == request.auth.uid &&
+                       incoming().keys().hasAll(['circleId', 'ownerUid', 'caregiverPinHash', 'createdAt']) &&
+                       incoming().keys().hasOnly(['circleId', 'ownerUid', 'caregiverPinHash', 'createdAt']) &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       isValidInviteCode(incoming()) &&
+                       exists(/databases/$(database)/documents/careCircles/$(incoming().circleId)) &&
+                       get(/databases/$(database)/documents/careCircles/$(incoming().circleId)).data.ownerUid == request.auth.uid;
+
+      allow update: if isSignedIn() &&
+                       isValidId(code) &&
+                       existing().ownerUid == request.auth.uid &&
+                       incoming().ownerUid == existing().ownerUid &&
+                       incoming().circleId == existing().circleId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidInviteCode(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['caregiverPinHash']);
+
+      allow delete: if isSignedIn() && isValidId(code) && existing().ownerUid == request.auth.uid;
+    }
+
+    match /careCircles/{circleId} {
+      allow get: if isSignedIn() && isValidId(circleId) && request.auth.uid in existing().memberUids;
+      allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+
+      allow create: if isSignedIn() &&
+                       isValidId(circleId) &&
+                       incoming().ownerUid == request.auth.uid &&
+                       incoming().memberUids.size() == 1 &&
+                       request.auth.uid in incoming().memberUids &&
+                       incoming().caregiverUids.size() == 0 &&
+                       incoming().keys().hasAll(['ownerUid', 'caregiverUids', 'memberUids', 'inviteCode', 'caregiverPinHash', 'seniorName', 'homeAddress', 'homeLat', 'homeLng', 'emergencyContactName', 'emergencyContactPhone', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['ownerUid', 'caregiverUids', 'memberUids', 'inviteCode', 'caregiverPinHash', 'seniorName', 'homeAddress', 'homeLat', 'homeLng', 'emergencyContactName', 'emergencyContactPhone', 'lastCheckInLabel', 'lastMood', 'createdAt', 'updatedAt']) &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp &&
+                       incoming().updatedAt <= request.time &&
+                       isValidCareCircle(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(circleId) &&
+                       isValidCareCircle(incoming()) &&
+                       incoming().ownerUid == existing().ownerUid &&
+                       incoming().inviteCode == existing().inviteCode &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp &&
+                       incoming().updatedAt <= request.time && (
+                         // Action 1: Existing member updates profile, home, contacts, PIN, or check-in
+                         (
+                           request.auth.uid in existing().memberUids &&
+                           incoming().memberUids == existing().memberUids &&
+                           incoming().caregiverUids == existing().caregiverUids &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'seniorName', 'homeAddress', 'homeLat', 'homeLng',
+                             'emergencyContactName', 'emergencyContactPhone',
+                             'caregiverPinHash', 'lastCheckInLabel', 'lastMood', 'updatedAt'
+                           ])
+                         ) ||
+                         // Action 2: Family caregiver joins using valid inviteCode lookup
+                         (
+                           !(request.auth.uid in existing().memberUids) &&
+                           request.auth.uid in incoming().caregiverUids &&
+                           request.auth.uid in incoming().memberUids &&
+                           incoming().caregiverUids.hasAll(existing().caregiverUids) &&
+                           incoming().memberUids.hasAll(existing().memberUids) &&
+                           incoming().caregiverUids.size() == existing().caregiverUids.size() + 1 &&
+                           incoming().memberUids.size() == existing().memberUids.size() + 1 &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['caregiverUids', 'memberUids', 'updatedAt']) &&
+                           exists(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)) &&
+                           get(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)).data.circleId == circleId
+                         )
+                       );
+
+      allow delete: if isSignedIn() && isValidId(circleId) && existing().ownerUid == request.auth.uid;
+
+      match /tasks/{taskId} {
+        allow get, delete: if isSignedIn() && isValidId(taskId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+        allow create: if isSignedIn() &&
+                         isValidId(taskId) &&
+                         incoming().authorUid == request.auth.uid &&
+                         incoming().keys().hasAll(['memberUids', 'authorUid', 'title', 'category', 'dueTimeLabel', 'completed', 'createdBy', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['memberUids', 'authorUid', 'title', 'category', 'dueTimeLabel', 'completed', 'createdBy', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidCareTask(incoming()) &&
+                         matchesParentMembers(circleId, incoming());
+        allow update: if isSignedIn() &&
+                         isValidId(taskId) &&
+                         isValidCareTask(incoming()) &&
+                         incoming().authorUid == existing().authorUid &&
+                         incoming().createdBy == existing().createdBy &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time && (
+                           (
+                             request.auth.uid in existing().memberUids &&
+                             incoming().memberUids == existing().memberUids &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['title', 'category', 'dueTimeLabel', 'completed', 'updatedAt'])
+                           ) ||
+                           (
+                             isParentCircleMember(circleId) &&
+                             incoming().memberUids.hasAll(existing().memberUids) &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt'])
+                           )
+                         );
+      }
+
+      match /events/{eventId} {
+        allow get, delete: if isSignedIn() && isValidId(eventId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+        allow create: if isSignedIn() &&
+                         isValidId(eventId) &&
+                         incoming().authorUid == request.auth.uid &&
+                         incoming().keys().hasAll(['memberUids', 'authorUid', 'title', 'dateLabel', 'timeLabel', 'location', 'notes', 'createdBy', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['memberUids', 'authorUid', 'title', 'dateLabel', 'timeLabel', 'location', 'notes', 'createdBy', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidCalendarEvent(incoming()) &&
+                         matchesParentMembers(circleId, incoming());
+        allow update: if isSignedIn() &&
+                         isValidId(eventId) &&
+                         isValidCalendarEvent(incoming()) &&
+                         incoming().authorUid == existing().authorUid &&
+                         incoming().createdBy == existing().createdBy &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time && (
+                           (
+                             request.auth.uid in existing().memberUids &&
+                             incoming().memberUids == existing().memberUids &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['title', 'dateLabel', 'timeLabel', 'location', 'notes', 'updatedAt'])
+                           ) ||
+                           (
+                             isParentCircleMember(circleId) &&
+                             incoming().memberUids.hasAll(existing().memberUids) &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt'])
+                           )
+                         );
+      }
+
+      match /medications/{medId} {
+        allow get, delete: if isSignedIn() && isValidId(medId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+        allow create: if isSignedIn() &&
+                         isValidId(medId) &&
+                         incoming().authorUid == request.auth.uid &&
+                         incoming().keys().hasAll(['memberUids', 'authorUid', 'name', 'dosage', 'scheduleSlot', 'takenToday', 'lastTakenLabel', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['memberUids', 'authorUid', 'name', 'dosage', 'scheduleSlot', 'takenToday', 'lastTakenLabel', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidMedication(incoming()) &&
+                         matchesParentMembers(circleId, incoming());
+        allow update: if isSignedIn() &&
+                         isValidId(medId) &&
+                         isValidMedication(incoming()) &&
+                         incoming().authorUid == existing().authorUid &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time && (
+                           (
+                             request.auth.uid in existing().memberUids &&
+                             incoming().memberUids == existing().memberUids &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'dosage', 'scheduleSlot', 'takenToday', 'lastTakenLabel', 'updatedAt'])
+                           ) ||
+                           (
+                             isParentCircleMember(circleId) &&
+                             incoming().memberUids.hasAll(existing().memberUids) &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt'])
+                           )
+                         );
+      }
+
+      match /photos/{photoId} {
+        allow get, delete: if isSignedIn() && isValidId(photoId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+        allow create: if isSignedIn() &&
+                         isValidId(photoId) &&
+                         incoming().authorUid == request.auth.uid &&
+                         incoming().keys().hasAll(['memberUids', 'authorUid', 'caption', 'sharedBy', 'thumbnailBase64', 'createdAt']) &&
+                         incoming().keys().hasOnly(['memberUids', 'authorUid', 'caption', 'sharedBy', 'thumbnailBase64', 'createdAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         isValidPhoto(incoming()) &&
+                         matchesParentMembers(circleId, incoming());
+        allow update: if isSignedIn() &&
+                         isValidId(photoId) &&
+                         isValidPhoto(incoming()) &&
+                         incoming().authorUid == existing().authorUid &&
+                         incoming().createdAt == existing().createdAt &&
+                         isParentCircleMember(circleId) &&
+                         incoming().memberUids.hasAll(existing().memberUids) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['memberUids']);
+      }
+
+      match /voiceNotes/{noteId} {
+        allow get, delete: if isSignedIn() && isValidId(noteId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+        allow create: if isSignedIn() &&
+                         isValidId(noteId) &&
+                         incoming().authorUid == request.auth.uid &&
+                         incoming().keys().hasAll(['memberUids', 'authorUid', 'senderName', 'durationSeconds', 'transcript', 'isFromCaregiver', 'createdAt']) &&
+                         incoming().keys().hasOnly(['memberUids', 'authorUid', 'senderName', 'durationSeconds', 'transcript', 'isFromCaregiver', 'createdAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         isValidVoiceNote(incoming()) &&
+                         matchesParentMembers(circleId, incoming());
+        allow update: if isSignedIn() &&
+                         isValidId(noteId) &&
+                         isValidVoiceNote(incoming()) &&
+                         incoming().authorUid == existing().authorUid &&
+                         incoming().createdAt == existing().createdAt &&
+                         isParentCircleMember(circleId) &&
+                         incoming().memberUids.hasAll(existing().memberUids) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['memberUids']);
+      }
+
+      match /safePlaces/{placeId} {
+        allow get, delete: if isSignedIn() && isValidId(placeId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+        allow create: if isSignedIn() &&
+                         isValidId(placeId) &&
+                         incoming().authorUid == request.auth.uid &&
+                         incoming().keys().hasAll(['memberUids', 'authorUid', 'label', 'category', 'address', 'latitude', 'longitude', 'createdAt']) &&
+                         incoming().keys().hasOnly(['memberUids', 'authorUid', 'label', 'category', 'address', 'latitude', 'longitude', 'createdAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         isValidSafePlace(incoming()) &&
+                         matchesParentMembers(circleId, incoming());
+        allow update: if isSignedIn() &&
+                         isValidId(placeId) &&
+                         isValidSafePlace(incoming()) &&
+                         incoming().authorUid == existing().authorUid &&
+                         incoming().createdAt == existing().createdAt &&
+                         isParentCircleMember(circleId) &&
+                         incoming().memberUids.hasAll(existing().memberUids) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['memberUids']);
+      }
+
+      match /alerts/{alertId} {
+        allow get, delete: if isSignedIn() && isValidId(alertId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+        allow create: if isSignedIn() &&
+                         isValidId(alertId) &&
+                         incoming().authorUid == request.auth.uid &&
+                         incoming().keys().hasAll(['memberUids', 'authorUid', 'type', 'message', 'latitude', 'longitude', 'resolved', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['memberUids', 'authorUid', 'type', 'message', 'latitude', 'longitude', 'resolved', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidSafetyAlert(incoming()) &&
+                         matchesParentMembers(circleId, incoming());
+        allow update: if isSignedIn() &&
+                         isValidId(alertId) &&
+                         isValidSafetyAlert(incoming()) &&
+                         incoming().authorUid == existing().authorUid &&
+                         incoming().type == existing().type &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time && (
+                           (
+                             request.auth.uid in existing().memberUids &&
+                             incoming().memberUids == existing().memberUids &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['resolved', 'updatedAt'])
+                           ) ||
+                           (
+                             isParentCircleMember(circleId) &&
+                             incoming().memberUids.hasAll(existing().memberUids) &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt'])
+                           )
+                         );
+      }
+
+      match /conversations/{msgId} {
+        allow get, delete: if isSignedIn() && isValidId(msgId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+        allow create: if isSignedIn() &&
+                         isValidId(msgId) &&
+                         incoming().authorUid == request.auth.uid &&
+                         incoming().keys().hasAll(['memberUids', 'authorUid', 'role', 'text', 'guideStepTitle', 'stepNumber', 'totalSteps', 'isStuckFlagged', 'createdAt']) &&
+                         incoming().keys().hasOnly(['memberUids', 'authorUid', 'role', 'text', 'guideStepTitle', 'stepNumber', 'totalSteps', 'isStuckFlagged', 'createdAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         isValidConversationMessage(incoming()) &&
+                         matchesParentMembers(circleId, incoming());
+        allow update: if isSignedIn() &&
+                         isValidId(msgId) &&
+                         isValidConversationMessage(incoming()) &&
+                         incoming().authorUid == existing().authorUid &&
+                         incoming().role == existing().role &&
+                         incoming().createdAt == existing().createdAt && (
+                           (
+                             request.auth.uid in existing().memberUids &&
+                             incoming().memberUids == existing().memberUids &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['isStuckFlagged'])
+                           ) ||
+                           (
+                             isParentCircleMember(circleId) &&
+                             incoming().memberUids.hasAll(existing().memberUids) &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['memberUids'])
+                           )
+                         );
+      }
+    }
+  }
+}

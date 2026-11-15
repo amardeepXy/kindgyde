@@ -1,0 +1,212 @@
+{
+  "entities": {
+    "CareCircle": {
+      "title": "CareCircle",
+      "description": "Shared senior and family caregiver workspace with home location, emergency contact, and Caregiver PIN hash.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "caregiverUids": { "type": "array" },
+        "memberUids": { "type": "array" },
+        "inviteCode": { "type": "string" },
+        "caregiverPinHash": { "type": "string" },
+        "seniorName": { "type": "string" },
+        "homeAddress": { "type": "string" },
+        "homeLat": { "type": "number" },
+        "homeLng": { "type": "number" },
+        "emergencyContactName": { "type": "string" },
+        "emergencyContactPhone": { "type": "string" },
+        "lastCheckInLabel": { "type": "string" },
+        "lastMood": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" }
+      },
+      "required": ["ownerUid", "caregiverUids", "memberUids", "inviteCode", "caregiverPinHash", "seniorName", "homeAddress", "homeLat", "homeLng", "emergencyContactName", "emergencyContactPhone", "createdAt", "updatedAt"]
+    },
+    "InviteLookup": {
+      "title": "InviteLookup",
+      "description": "Invite code lookup entry mapping a 6-character Family Link Code to a CareCircle.",
+      "type": "object",
+      "properties": {
+        "circleId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "caregiverPinHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["circleId", "ownerUid", "caregiverPinHash", "createdAt"]
+    },
+    "CareTask": {
+      "title": "CareTask",
+      "description": "Daily task item manageable by senior, AI assistant, or remote family caregiver.",
+      "type": "object",
+      "properties": {
+        "memberUids": { "type": "array" },
+        "authorUid": { "type": "string" },
+        "title": { "type": "string" },
+        "category": { "type": "string" },
+        "dueTimeLabel": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "createdBy": { "type": "string", "enum": ["senior", "ai", "caregiver"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberUids", "authorUid", "title", "category", "dueTimeLabel", "completed", "createdBy", "createdAt", "updatedAt"]
+    },
+    "CalendarEvent": {
+      "title": "CalendarEvent",
+      "description": "Shared family calendar appointment or social event.",
+      "type": "object",
+      "properties": {
+        "memberUids": { "type": "array" },
+        "authorUid": { "type": "string" },
+        "title": { "type": "string" },
+        "dateLabel": { "type": "string" },
+        "timeLabel": { "type": "string" },
+        "location": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdBy": { "type": "string", "enum": ["senior", "ai", "caregiver"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberUids", "authorUid", "title", "dateLabel", "timeLabel", "location", "notes", "createdBy", "createdAt", "updatedAt"]
+    },
+    "MedicationItem": {
+      "title": "MedicationItem",
+      "description": "Medication reminder and daily adherence tracker.",
+      "type": "object",
+      "properties": {
+        "memberUids": { "type": "array" },
+        "authorUid": { "type": "string" },
+        "name": { "type": "string" },
+        "dosage": { "type": "string" },
+        "scheduleSlot": { "type": "string", "enum": ["Morning", "Afternoon", "Evening", "Bedtime"] },
+        "takenToday": { "type": "boolean" },
+        "lastTakenLabel": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberUids", "authorUid", "name", "dosage", "scheduleSlot", "takenToday", "lastTakenLabel", "createdAt", "updatedAt"]
+    },
+    "FamilyPhotoItem": {
+      "title": "FamilyPhotoItem",
+      "description": "Shared family photo with caption and compressed thumbnail preview.",
+      "type": "object",
+      "properties": {
+        "memberUids": { "type": "array" },
+        "authorUid": { "type": "string" },
+        "caption": { "type": "string" },
+        "sharedBy": { "type": "string" },
+        "thumbnailBase64": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberUids", "authorUid", "caption", "sharedBy", "thumbnailBase64", "createdAt"]
+    },
+    "VoiceNoteItem": {
+      "title": "VoiceNoteItem",
+      "description": "Voice message metadata with transcript and audio summary.",
+      "type": "object",
+      "properties": {
+        "memberUids": { "type": "array" },
+        "authorUid": { "type": "string" },
+        "senderName": { "type": "string" },
+        "durationSeconds": { "type": "integer" },
+        "transcript": { "type": "string" },
+        "isFromCaregiver": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberUids", "authorUid", "senderName", "durationSeconds", "transcript", "isFromCaregiver", "createdAt"]
+    },
+    "SafePlace": {
+      "title": "SafePlace",
+      "description": "Saved safe location marker for Google Maps navigation and family reference.",
+      "type": "object",
+      "properties": {
+        "memberUids": { "type": "array" },
+        "authorUid": { "type": "string" },
+        "label": { "type": "string" },
+        "category": { "type": "string" },
+        "address": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberUids", "authorUid", "label", "category", "address", "latitude", "longitude", "createdAt"]
+    },
+    "SafetyAlert": {
+      "title": "SafetyAlert",
+      "description": "SOS alert, scam warning, or AI stuck-step help signal for caregivers.",
+      "type": "object",
+      "properties": {
+        "memberUids": { "type": "array" },
+        "authorUid": { "type": "string" },
+        "type": { "type": "string", "enum": ["sos", "scam_warning", "stuck_help", "check_in"] },
+        "message": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "resolved": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberUids", "authorUid", "type", "message", "latitude", "longitude", "resolved", "createdAt", "updatedAt"]
+    },
+    "ConversationMessage": {
+      "title": "ConversationMessage",
+      "description": "Persistent multi-turn AI companion conversation entry.",
+      "type": "object",
+      "properties": {
+        "memberUids": { "type": "array" },
+        "authorUid": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "model"] },
+        "text": { "type": "string" },
+        "guideStepTitle": { "type": "string" },
+        "stepNumber": { "type": "integer" },
+        "totalSteps": { "type": "integer" },
+        "isStuckFlagged": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["memberUids", "authorUid", "role", "text", "guideStepTitle", "stepNumber", "totalSteps", "isStuckFlagged", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/careCircles/{circleId}": {
+      "schema": { "$ref": "#/entities/CareCircle" },
+      "description": "Care Circle root documents shared by senior and linked family caregivers."
+    },
+    "/inviteCodes/{code}": {
+      "schema": { "$ref": "#/entities/InviteLookup" },
+      "description": "Exact-code invite lookup mapping Family Link Codes to Care Circles."
+    },
+    "/careCircles/{circleId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/CareTask" },
+      "description": "Daily tasks synced in real time across senior, AI, and caregivers."
+    },
+    "/careCircles/{circleId}/events/{eventId}": {
+      "schema": { "$ref": "#/entities/CalendarEvent" },
+      "description": "Shared family calendar events."
+    },
+    "/careCircles/{circleId}/medications/{medId}": {
+      "schema": { "$ref": "#/entities/MedicationItem" },
+      "description": "Medication reminders and daily adherence states."
+    },
+    "/careCircles/{circleId}/photos/{photoId}": {
+      "schema": { "$ref": "#/entities/FamilyPhotoItem" },
+      "description": "Digital photo sharing feed."
+    },
+    "/careCircles/{circleId}/voiceNotes/{noteId}": {
+      "schema": { "$ref": "#/entities/VoiceNoteItem" },
+      "description": "Voice messaging feed with transcripts."
+    },
+    "/careCircles/{circleId}/safePlaces/{placeId}": {
+      "schema": { "$ref": "#/entities/SafePlace" },
+      "description": "Saved Safe Places for Take Me Home and map markers."
+    },
+    "/careCircles/{circleId}/alerts/{alertId}": {
+      "schema": { "$ref": "#/entities/SafetyAlert" },
+      "description": "SOS alerts, check-ins, scam warnings, and AI stuck-step flags."
+    },
+    "/careCircles/{circleId}/conversations/{msgId}": {
+      "schema": { "$ref": "#/entities/ConversationMessage" },
+      "description": "Persistent AI conversation memory and step-by-step tutor history."
+    }
+  }
+}

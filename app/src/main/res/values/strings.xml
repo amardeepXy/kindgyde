@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">KindGuide</string>
+    <string name="accessibility_service_label">KindGuide On-Screen Coach</string>
+    <string name="accessibility_service_description">Lets KindGuide read visible button labels and capture an on-demand screenshot only while guiding you step by step over other apps. Passwords are never read or stored.</string>
+    <string name="sign_in_google">Sign in with Google</string>
+    <string name="tap_and_ask">Tap &amp; Ask KindGuide</string>
+    <string name="take_me_home">Take Me Home</string>
+    <string name="sos_family_alert">SOS Family Alert</string>
+    <string name="family_view">Family View</string>
+    <string name="senior_mode">Senior Mode</string>
+    <string name="gemini_live_title">KindGuide Live</string>
+    <string name="start_gemini_live">Talk to Gemini Live</string>
+    <string name="live_share_screen">Live + Share Screen</string>
+</resources>

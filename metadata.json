@@ -1,0 +1,6 @@
+{
+  "name": "KindGuide",
+  "description": "Senior-friendly voice-first AI smartphone guide with cross-app floating step coach, real-time family caregiver dashboard, shared calendar, photo & voice sharing, medication reminders, scam detector, and Google Maps safe navigation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
