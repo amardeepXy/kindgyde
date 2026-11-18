@@ -21,7 +21,38 @@ data class AiGuideStep(
     val instruction: String,
     val targetButtonHint: String,
     val reassuranceNote: String,
-    val suggestedAppName: String
+    val suggestedAppName: String,
+    val isCorrection: Boolean = false,
+    val wrongClickedLabel: String = "",
+    val targetXPercent: Int = -1,
+    val targetYPercent: Int = -1,
+    val guidanceMode: String = "HIGHLIGHT_BUTTON", // HIGHLIGHT_BUTTON, SWIPE_HINT, SEARCH_HINT, CONFIRM_SEND
+    val requiresConfirmation: Boolean = false
+)
+
+data class AssistiveScreenAction(
+    val actionType: String, // OPEN_APP, WEB_SEARCH, TAP_ELEMENT, SWIPE_SCREEN, TYPE_TEXT, SYSTEM_NAV
+    val targetLabel: String = "",
+    val swipeDirection: String = "", // LEFT, RIGHT, UP, DOWN
+    val textToType: String = "",
+    val submitAfterType: Boolean = false,
+    val expectedAppName: String = "",
+    val systemNavAction: String = "", // BACK, HOME
+    val spokenExplanation: String = "",
+    val isFinalSendOrCommit: Boolean = false,
+    val userConfirmed: Boolean = false
+)
+
+data class VerifiedActionOutcome(
+    val success: Boolean,
+    val awaitingUserConfirmation: Boolean = false,
+    val awaitingUserTapOrHelp: Boolean = false,
+    val wasAborted: Boolean = false,
+    val actionSummary: String,
+    val verifiedAppTitle: String,
+    val isChatConversationOpen: Boolean = false,
+    val visibleElementsSummary: String,
+    val spokenConfirmations: List<String> = emptyList()
 )
 
 data class AiCrudCommand(
@@ -55,7 +86,7 @@ data class DailyEngagementContent(
     val triviaFact: String
 )
 
-class KindGuideAiService {
+open class KindGuideAiService {
 
     private val scamSchema = Schema.obj(
         properties = mapOf(
@@ -98,7 +129,7 @@ class KindGuideAiService {
                          * Format list items as numbered (`1. **Title** — Description`) or bulleted (`- **Title:** Description`) lines with **bold titles** so each item stands out clearly.
                          * Include a short, encouraging tip at the end as a blockquote callout, e.g. `> 💡 **Gentle Tip:** Move at your own comfortable pace and breathe steadily.`
                        - For short casual greetings ("Hey", "How are you?"), keep your reply brief and conversational (1–2 sentences).
-                    3. When the user DOES explicitly ask what they have left to do, what their tasks are, or about their medications/schedule, format their actual items from CARE CIRCLE CONTEXT in a clean Markdown bullet list.
+                    3. When the user DOES explicitly ask about their medications or calendar events/appointments, give a warm, concise 1–2 sentence overview (highlighting whether any medicine is due or how many events are coming up), because the app automatically displays rich interactive Medication & Calendar Event cards right below your message. When asked about general daily tasks, list their open tasks in clean Markdown.
                     4. When the user asks how to do something on their smartphone (e.g., "How do I send a photo?") or shares a screenshot, give ONLY ONE small, clear step at a time and wait for them to finish before giving the next step.
 
                     OPTIONAL ACTION METADATA:
@@ -141,7 +172,7 @@ class KindGuideAiService {
         )
     }
 
-    suspend fun streamCompanionTurn(
+    open suspend fun streamCompanionTurn(
         userMessage: String,
         historyMessages: List<ConversationMessage>,
         screenContextSummary: String,
@@ -197,14 +228,14 @@ class KindGuideAiService {
 
                         // Progressively reveal buffered chunks so streaming is always visibly smooth
                         while (displayedLength < targetVisible.length) {
-                            val stepChars = minOf(12, targetVisible.length - displayedLength)
+                            val stepChars = minOf(16, targetVisible.length - displayedLength)
                             var nextEnd = displayedLength + stepChars
                             while (nextEnd < targetVisible.length && !targetVisible[nextEnd].isWhitespace()) {
                                 nextEnd++
                             }
                             displayedLength = nextEnd
                             onPartialReply(targetVisible.substring(0, displayedLength))
-                            delay(24L)
+                            delay(14L)
                         }
                     }
                 }
@@ -280,7 +311,10 @@ class KindGuideAiService {
                         instruction = instruction,
                         targetButtonHint = json.optString("targetButtonHint"),
                         reassuranceNote = json.optString("reassuranceNote"),
-                        suggestedAppName = json.optString("suggestedAppName")
+                        suggestedAppName = json.optString("suggestedAppName"),
+                        isCorrection = json.optBoolean("isCorrection", false),
+                        targetXPercent = json.optInt("targetXPercent", -1),
+                        targetYPercent = json.optInt("targetYPercent", -1)
                     )
                 }
                 val crudOp = json.optString("crudOperation", "none")
@@ -373,6 +407,22 @@ class KindGuideAiService {
             return AiCompanionResult(reply = exerciseMarkdown, guideStep = null, crudCommand = null)
         }
 
+        val asksMeds = lower.contains("med") || lower.contains("pill") || lower.contains("tablet")
+        val asksCalendar = lower.contains("calendar") || lower.contains("event") || lower.contains("appointment")
+        if (asksMeds || asksCalendar) {
+            val reply = when {
+                asksMeds && asksCalendar ->
+                    "### 📅 Medications & Calendar Events\nHere are your active medication reminders and upcoming calendar events, **$seniorName**. You can tap **Took It** or **Ask AI** right on the cards below."
+                asksCalendar ->
+                    "### 📅 Upcoming Calendar Events\nHere are your upcoming calendar events, **$seniorName**. Tap any event card below to view your calendar or ask me to help prepare."
+                medsLine.isBlank() || medsLine.contains("None", ignoreCase = true) || medsLine.contains("All taken", ignoreCase = true) ->
+                    "### 💊 Medication Status\nYou're all caught up on today's medications, **$seniorName**! You can check or update any reminder in the interactive cards below."
+                else ->
+                    "### 💊 Your Medication Reminders\nHere are your active medication reminders, **$seniorName**. Tap **Took It** right on the card below when you've taken a dose."
+            }
+            return AiCompanionResult(reply = reply, guideStep = null, crudCommand = null)
+        }
+
         if (lower.contains("task") || lower.contains("left to do") || lower.contains("to do") || lower.contains("schedule")) {
             val taskReply = if (openTasksLine.isBlank() || openTasksLine.equals("None", ignoreCase = true)) {
                 "### ✨ All Caught Up\nYou don't have any open tasks left for today, **$seniorName**!"
@@ -386,21 +436,6 @@ class KindGuideAiService {
                 }.trim()
             }
             return AiCompanionResult(reply = taskReply, guideStep = null, crudCommand = null)
-        }
-
-        if (lower.contains("med") || lower.contains("pill") || lower.contains("tablet")) {
-            val medReply = if (medsLine.isBlank() || medsLine.contains("None", ignoreCase = true)) {
-                "### 💊 Medications\nYou're all caught up on your medications for today, **$seniorName**!"
-            } else {
-                val items = medsLine.split(";").map { it.trim() }.filter { it.isNotBlank() }
-                buildString {
-                    appendLine("### 💊 Medications Due Today")
-                    items.forEach { item ->
-                        appendLine("- **$item**")
-                    }
-                }.trim()
-            }
-            return AiCompanionResult(reply = medReply, guideStep = null, crudCommand = null)
         }
 
         val conversationalReply = when {
@@ -418,9 +453,10 @@ class KindGuideAiService {
         )
     }
 
-    suspend fun checkForScam(
+    open suspend fun checkForScam(
         messageText: String,
-        screenshot: Bitmap?
+        screenshot: Bitmap?,
+        onPartialUpdate: (String) -> Unit = {}
     ): ScamCheckResult {
         val input = content {
             if (screenshot != null) {
@@ -431,10 +467,22 @@ class KindGuideAiService {
             )
         }
 
-        val responseText = try {
+        val rawBuilder = StringBuilder()
+        var lastPreview = ""
+        try {
             withTimeout(AI_TIMEOUT_MS) {
-                scamModel.generateContent(input).text
-            } ?: throw IllegalStateException("Scam check returned an empty response.")
+                scamModel.generateContentStream(input).collect { chunk ->
+                    val piece = chunk.text.orEmpty()
+                    if (piece.isNotEmpty()) {
+                        rawBuilder.append(piece)
+                        val preview = buildScamStreamPreview(rawBuilder.toString())
+                        if (preview.isNotBlank() && preview != lastPreview) {
+                            lastPreview = preview
+                            onPartialUpdate(preview)
+                        }
+                    }
+                }
+            }
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Scam check timed out", e)
             throw IllegalStateException("Safety check timed out. Please try again.")
@@ -443,6 +491,11 @@ class KindGuideAiService {
         } catch (e: Exception) {
             Log.e(TAG, "Scam check failed", e)
             throw e
+        }
+
+        val responseText = rawBuilder.toString().trim()
+        if (responseText.isBlank()) {
+            throw IllegalStateException("Scam check returned an empty response.")
         }
 
         val json = JSONObject(responseText)
@@ -454,13 +507,32 @@ class KindGuideAiService {
         )
     }
 
-    suspend fun generateDailyEngagement(themeHint: String): DailyEngagementContent {
-        val responseText = try {
+    open suspend fun generateDailyEngagement(
+        themeHint: String,
+        onPartialUpdate: (title: String, body: String) -> Unit = { _, _ -> }
+    ): DailyEngagementContent {
+        val rawBuilder = StringBuilder()
+        var lastTitle = ""
+        var lastBody = ""
+        try {
             withTimeout(AI_TIMEOUT_MS) {
-                engagementModel.generateContent(
+                engagementModel.generateContentStream(
                     "Create a warm, uplifting short audio story and an accessible trivia question inspired by: $themeHint"
-                ).text
-            } ?: throw IllegalStateException("Story generation returned an empty response.")
+                ).collect { chunk ->
+                    val piece = chunk.text.orEmpty()
+                    if (piece.isNotEmpty()) {
+                        rawBuilder.append(piece)
+                        val raw = rawBuilder.toString()
+                        val title = extractPartialJsonStringField(raw, "storyTitle")
+                        val body = extractPartialJsonStringField(raw, "storyBody")
+                        if ((title.isNotBlank() || body.isNotBlank()) && (title != lastTitle || body != lastBody)) {
+                            lastTitle = title
+                            lastBody = body
+                            onPartialUpdate(title, body)
+                        }
+                    }
+                }
+            }
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Engagement generation timed out", e)
             throw IllegalStateException("Story generation timed out. Please try again.")
@@ -469,6 +541,11 @@ class KindGuideAiService {
         } catch (e: Exception) {
             Log.e(TAG, "Engagement generation failed", e)
             throw e
+        }
+
+        val responseText = rawBuilder.toString().trim()
+        if (responseText.isBlank()) {
+            throw IllegalStateException("Story generation returned an empty response.")
         }
 
         val json = JSONObject(responseText)
@@ -511,9 +588,54 @@ class KindGuideAiService {
         )
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "KindGuideAiService"
-        const val MODEL_NAME = "gemini-3-flash-preview"
-        const val AI_TIMEOUT_MS = 45_000L
+        const val MODEL_NAME = "gemini-3.8-flash"
+        const val AI_TIMEOUT_MS = 60_000L
+
+        internal fun buildScamStreamPreview(partialJson: String): String {
+            val verdict = extractPartialJsonStringField(partialJson, "verdict")
+            val headline = extractPartialJsonStringField(partialJson, "headline")
+            val explanation = extractPartialJsonStringField(partialJson, "explanation")
+            val action = extractPartialJsonStringField(partialJson, "recommendedAction")
+            return buildString {
+                if (verdict.isNotBlank()) appendLine(verdict)
+                if (headline.isNotBlank()) appendLine(headline)
+                if (explanation.isNotBlank()) appendLine(explanation)
+                if (action.isNotBlank()) append("Action: $action")
+            }.trim()
+        }
+
+        internal fun extractPartialJsonStringField(partialJson: String, fieldName: String): String {
+            val keyToken = "\"$fieldName\""
+            val keyIdx = partialJson.indexOf(keyToken)
+            if (keyIdx < 0) return ""
+            var i = keyIdx + keyToken.length
+            while (i < partialJson.length && (partialJson[i].isWhitespace() || partialJson[i] == ':')) {
+                i++
+            }
+            if (i >= partialJson.length || partialJson[i] != '"') return ""
+            i++
+            val sb = StringBuilder()
+            while (i < partialJson.length) {
+                val c = partialJson[i]
+                if (c == '\\' && i + 1 < partialJson.length) {
+                    val next = partialJson[i + 1]
+                    when (next) {
+                        'n' -> sb.append('\n')
+                        't' -> sb.append(' ')
+                        '"' -> sb.append('"')
+                        '\\' -> sb.append('\\')
+                        else -> sb.append(next)
+                    }
+                    i += 2
+                    continue
+                }
+                if (c == '"') break
+                sb.append(c)
+                i++
+            }
+            return sb.toString().trim()
+        }
     }
 }

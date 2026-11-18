@@ -42,14 +42,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ScreenShare
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Assistant
+import androidx.compose.material.icons.filled.AddComment
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Emergency
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
@@ -71,6 +76,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -109,10 +115,15 @@ import com.example.ai.AiGuideStep
 import com.example.ai.GeminiLiveUiState
 import com.example.ai.GuideSessionCoordinator
 import com.example.ai.LivePhase
+import com.example.data.model.CalendarEvent
 import com.example.data.model.ConversationMessage
+import com.example.data.model.MedicationItem
 import com.example.ui.components.AccessibilityDisclosureDialog
 import com.example.ui.components.ActiveGuideStepCard
+import com.example.ui.components.ConversationListBottomSheet
+import com.example.ui.components.InlineChatScheduleCards
 import com.example.ui.components.WarmSectionCard
+import com.example.ui.components.buildConversationSummaries
 import com.example.ui.state.CircleDashboardBundle
 import java.util.Locale
 
@@ -120,6 +131,7 @@ import java.util.Locale
 @Composable
 fun SeniorHomeAndCoachScreen(
     bundle: CircleDashboardBundle,
+    activeConversationId: String,
     liveState: GeminiLiveUiState,
     activeStep: AiGuideStep?,
     lastReply: String,
@@ -130,6 +142,9 @@ fun SeniorHomeAndCoachScreen(
     isReadAloudEnabled: Boolean,
     isAccessibilityConnected: Boolean,
     isOverlayVisible: Boolean,
+    onBackToHome: () -> Unit = {},
+    onStartNewConversation: () -> Unit,
+    onSelectConversation: (String) -> Unit,
     onOpenGeminiLive: (shareScreen: Boolean) -> Unit,
     onOpenGeminiLiveCamera: () -> Unit = { onOpenGeminiLive(false) },
     onStopGeminiLive: () -> Unit,
@@ -145,6 +160,7 @@ fun SeniorHomeAndCoachScreen(
     var attachedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var showDisclosure by remember { mutableStateOf(false) }
     var showToolsSheet by remember { mutableStateOf(false) }
+    var showConversationsSheet by remember { mutableStateOf(false) }
     var showPracticeSimulator by remember { mutableStateOf(false) }
     var voiceNotice by remember { mutableStateOf<String?>(null) }
 
@@ -152,6 +168,13 @@ fun SeniorHomeAndCoachScreen(
     val voiceMeterLevel by GuideSessionCoordinator.voiceMeterLevel.collectAsStateWithLifecycle()
 
     val listState = rememberLazyListState()
+
+    val activeMessages = remember(bundle.conversations, activeConversationId) {
+        GuideSessionCoordinator.filterMessagesForThread(bundle.conversations, activeConversationId)
+    }
+    val conversationSummaries = remember(bundle.conversations) {
+        buildConversationSummaries(bundle.conversations)
+    }
 
     // Ensure GuideSessionCoordinator always has live Tasks, Medications, Events, and Conversations
     LaunchedEffect(
@@ -166,14 +189,18 @@ fun SeniorHomeAndCoachScreen(
             tasks = bundle.tasks,
             events = bundle.events,
             medications = bundle.medications,
-            history = bundle.conversations
+            allConversations = bundle.conversations
         )
     }
 
-    LaunchedEffect(bundle.conversations.size, activeStep, isAiBusy, streamingReply.length) {
+    LaunchedEffect(activeConversationId, activeMessages.size, activeStep, isAiBusy, streamingReply.length) {
         val totalCount = listState.layoutInfo.totalItemsCount
         if (totalCount > 0) {
-            runCatching { listState.scrollToItem(totalCount - 1) }
+            if (activeMessages.isEmpty() && streamingReply.isBlank() && !isAiBusy && activeStep == null) {
+                runCatching { listState.scrollToItem(0) }
+            } else {
+                runCatching { listState.scrollToItem(totalCount - 1) }
+            }
         }
     }
 
@@ -245,6 +272,17 @@ fun SeniorHomeAndCoachScreen(
                 showDisclosure = false
                 context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
+        )
+    }
+
+    if (showConversationsSheet) {
+        ConversationListBottomSheet(
+            summaries = conversationSummaries,
+            activeConversationId = activeConversationId,
+            activeThreadMessageCount = activeMessages.size,
+            onSelectConversation = onSelectConversation,
+            onStartNewConversation = onStartNewConversation,
+            onDismiss = { showConversationsSheet = false }
         )
     }
 
@@ -468,68 +506,94 @@ fun SeniorHomeAndCoachScreen(
                 .padding(horizontal = 14.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Compact Top Greeting + Utility Bar
+            // Clean ChatGPT-style Top Bar: Back to Home, Title, Conversations, New Chat, Tools
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Hi, ${bundle.circle.seniorName.ifBlank { "Friend" }}",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = buildString {
-                            append("$openTasksCount open task${if (openTasksCount == 1) "" else "s"}")
-                            if (pendingMed != null) {
-                                append(" • ${pendingMed.name} due")
-                            } else {
-                                append(" • All meds taken")
-                            }
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1
-                    )
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            if (isAccessibilityConnected) {
-                                GuideSessionCoordinator.setOverlayVisible(!isOverlayVisible)
-                            } else {
-                                showDisclosure = true
-                            }
-                        },
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                        modifier = Modifier.height(42.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    IconButton(
+                        onClick = onBackToHome,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("ai_back_to_home_button")
                     ) {
                         Icon(
-                            Icons.Filled.Layers,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to Home"
                         )
-                        Spacer(Modifier.width(4.dp))
-                        Text(if (isOverlayVisible) "Overlay On" else "Overlay")
+                    }
+                    Column {
+                        Text(
+                            text = "KindGuide AI",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                        if (isOverlayVisible) {
+                            Text(
+                                text = "Screen overlay active",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = { showConversationsSheet = true },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .heightIn(min = 44.dp)
+                            .testTag("open_conversations_list_button")
+                    ) {
+                        Icon(
+                            Icons.Filled.Forum,
+                            contentDescription = "Browse conversations",
+                            modifier = Modifier.size(17.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            text = if (conversationSummaries.isNotEmpty()) {
+                                "Chats (${conversationSummaries.size})"
+                            } else {
+                                "Chats"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1
+                        )
                     }
 
-                    OutlinedButton(
-                        onClick = { showToolsSheet = true },
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    IconButton(
+                        onClick = onStartNewConversation,
                         modifier = Modifier
-                            .height(42.dp)
+                            .size(48.dp)
+                            .testTag("new_conversation_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AddComment,
+                            contentDescription = "Start new conversation"
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { showToolsSheet = true },
+                        modifier = Modifier
+                            .size(48.dp)
                             .testTag("open_more_tools_button")
                     ) {
                         Icon(
-                            Icons.Filled.MoreHoriz,
-                            contentDescription = "More tools",
-                            modifier = Modifier.size(18.dp)
+                            imageVector = Icons.Filled.MoreHoriz,
+                            contentDescription = "More tools"
                         )
-                        Spacer(Modifier.width(4.dp))
-                        Text("Tools")
                     }
                 }
             }
@@ -585,40 +649,6 @@ fun SeniorHomeAndCoachScreen(
                 }
             }
 
-            // Pending Medicine Quick Pill (if any due today)
-            if (pendingMed != null) {
-                WarmSectionCard {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Medicine Due • ${pendingMed.scheduleSlot}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "${pendingMed.name} (${pendingMed.dosage})",
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1
-                            )
-                        }
-                        Button(
-                            onClick = { onToggleMedication(pendingMed.id, true) },
-                            modifier = Modifier
-                                .height(44.dp)
-                                .testTag("quick_take_med_button"),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondary
-                            )
-                        ) {
-                            Text("Took It")
-                        }
-                    }
-                }
-            }
 
             // Real-time AI CRUD Confirmation Banner
             if (crudBanner != null) {
@@ -664,130 +694,170 @@ fun SeniorHomeAndCoachScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(vertical = 6.dp)
             ) {
-                // Starter Card: Open Live Voice / Screen / Camera + Quick Prompts
-                item(key = "welcome_starter_card") {
-                    WarmSectionCard {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Filled.Assistant,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
+                val isFreshEmptyChat = activeMessages.isEmpty() &&
+                    streamingReply.isBlank() &&
+                    !isAiBusy &&
+                    activeStep == null &&
+                    lastReply.isBlank()
+
+                if (isFreshEmptyChat) {
+                    item(key = "chatgpt_clean_empty_landing") {
+                        Column(
+                            modifier = Modifier
+                                .fillParentMaxHeight(0.88f)
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(58.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                            Spacer(Modifier.height(14.dp))
                             Text(
-                                text = "KindGuide Assistant",
-                                style = MaterialTheme.typography.titleMedium,
+                                text = "How can I help today?",
+                                style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold
                             )
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = "Ask about your tasks, medicines, wellness, or phone—or start Live Assistant to share your screen or camera.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(10.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = { onOpenGeminiLive(false) },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp),
-                                contentPadding = PaddingValues(horizontal = 8.dp)
-                            ) {
-                                Icon(
-                                    Icons.Filled.GraphicEq,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text("Live Voice", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                            }
-                            FilledTonalButton(
-                                onClick = { onOpenGeminiLive(true) },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("hero_live_share_screen_button"),
-                                contentPadding = PaddingValues(horizontal = 8.dp)
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.ScreenShare,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text("Screen", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                            }
-                            FilledTonalButton(
-                                onClick = onOpenGeminiLiveCamera,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("hero_live_share_camera_button"),
-                                contentPadding = PaddingValues(horizontal = 8.dp)
-                            ) {
-                                Icon(
-                                    Icons.Filled.PhotoCamera,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text("Camera", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            val quickPrompts = listOf(
-                                "Morning exercises to stay healthy",
-                                "What tasks & medicines do I have?",
-                                "How do I send a photo?"
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "Ask a question, or start Live Voice, Screen, or Camera.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            quickPrompts.forEach { prompt ->
-                                AssistChip(
-                                    onClick = {
-                                        GuideSessionCoordinator.askCompanion(
-                                            query = prompt,
-                                            activateOverlayIfConnected = isAccessibilityConnected
-                                        )
-                                    },
-                                    label = {
-                                        Text(prompt, style = MaterialTheme.typography.bodySmall)
-                                    }
+                            Spacer(Modifier.height(18.dp))
+
+                            // Clean Live Tools Pill Row
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { onOpenGeminiLive(false) },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.GraphicEq,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Live Voice", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                                }
+                                FilledTonalButton(
+                                    onClick = { onOpenGeminiLive(true) },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .testTag("hero_live_share_screen_button"),
+                                    contentPadding = PaddingValues(horizontal = 8.dp)
+                                ) {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.ScreenShare,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Screen", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                                }
+                                FilledTonalButton(
+                                    onClick = onOpenGeminiLiveCamera,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(48.dp)
+                                        .testTag("hero_live_share_camera_button"),
+                                    contentPadding = PaddingValues(horizontal = 8.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.PhotoCamera,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Camera", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                                }
+                            }
+
+                            Spacer(Modifier.height(16.dp))
+
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                val quickPrompts = listOf(
+                                    "Show my meds & calendar events",
+                                    "Morning exercises to stay healthy",
+                                    "How do I send a photo?",
+                                    "What tasks do I have today?"
                                 )
+                                quickPrompts.forEach { prompt ->
+                                    AssistChip(
+                                        onClick = {
+                                            GuideSessionCoordinator.askCompanion(
+                                                query = prompt,
+                                                activateOverlayIfConnected = isAccessibilityConnected
+                                            )
+                                        },
+                                        label = {
+                                            Text(prompt, style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
-                // Natural WhatsApp-Style Chat Bubbles with Rich Markdown & Voice Meter
+                // Natural WhatsApp-Style Chat Bubbles with Rich Markdown, Voice Meter & Inline Interactive ReminderCards
+                val threadDisplayMessages = activeMessages.takeLast(40)
                 itemsIndexed(
-                    items = bundle.conversations.takeLast(30),
-                    key = { index, msg -> "msg_${index}_${msg.id}" }
+                    items = threadDisplayMessages,
+                    key = { index, msg -> "msg_${activeConversationId}_${index}_${msg.id}" }
                 ) { index, msg ->
                     val msgId = msg.id.ifBlank { "msg_$index" }
+                    val precedingUserText = if (index > 0 && threadDisplayMessages[index - 1].role == "user") {
+                        threadDisplayMessages[index - 1].text
+                    } else {
+                        ""
+                    }
                     WhatsAppStyleChatBubble(
                         message = msg,
+                        precedingUserText = precedingUserText,
+                        medications = bundle.medications,
+                        events = bundle.events,
                         isStreaming = false,
                         isSpeaking = speakingMessageId == msgId,
                         voiceMeterLevel = if (speakingMessageId == msgId) voiceMeterLevel else 0f,
                         onToggleSpeak = {
                             GuideSessionCoordinator.toggleSpeakMessage(msgId, msg.text)
+                        },
+                        onToggleMedication = onToggleMedication,
+                        onOpenCalendarTab = { onNavigateTab("tasks") },
+                        onAskAboutItem = { prompt ->
+                            GuideSessionCoordinator.askCompanion(
+                                query = prompt,
+                                activateOverlayIfConnected = isAccessibilityConnected
+                            )
                         }
                     )
                 }
 
                 // Live Streaming AI Reply Bubble (word-by-word as tokens arrive)
-                val lastSavedMsg = bundle.conversations.lastOrNull()
+                val lastSavedMsg = activeMessages.lastOrNull()
                 val isAlreadySaved = lastSavedMsg?.role == "model" && lastSavedMsg.text == streamingReply
                 if (streamingReply.isNotBlank() && !isAlreadySaved) {
                     item(key = "live_streaming_reply_bubble") {
@@ -866,7 +936,7 @@ fun SeniorHomeAndCoachScreen(
                             onCloseGuide = { GuideSessionCoordinator.clearGuideSession() }
                         )
                     }
-                } else if (bundle.conversations.isEmpty() && lastReply.isNotBlank()) {
+                } else if (activeMessages.isEmpty() && lastReply.isNotBlank()) {
                     item(key = "fallback_last_reply") {
                         WhatsAppStyleChatBubble(
                             message = ConversationMessage(
@@ -874,11 +944,21 @@ fun SeniorHomeAndCoachScreen(
                                 role = "model",
                                 text = lastReply
                             ),
+                            medications = bundle.medications,
+                            events = bundle.events,
                             isStreaming = false,
                             isSpeaking = speakingMessageId == "last_reply",
                             voiceMeterLevel = if (speakingMessageId == "last_reply") voiceMeterLevel else 0f,
                             onToggleSpeak = {
                                 GuideSessionCoordinator.toggleSpeakMessage("last_reply", lastReply)
+                            },
+                            onToggleMedication = onToggleMedication,
+                            onOpenCalendarTab = { onNavigateTab("tasks") },
+                            onAskAboutItem = { prompt ->
+                                GuideSessionCoordinator.askCompanion(
+                                    query = prompt,
+                                    activateOverlayIfConnected = isAccessibilityConnected
+                                )
                             }
                         )
                     }
@@ -1062,10 +1142,16 @@ fun SeniorHomeAndCoachScreen(
 @Composable
 private fun WhatsAppStyleChatBubble(
     message: ConversationMessage,
+    precedingUserText: String = "",
+    medications: List<MedicationItem> = emptyList(),
+    events: List<CalendarEvent> = emptyList(),
     isStreaming: Boolean,
     isSpeaking: Boolean,
     voiceMeterLevel: Float,
-    onToggleSpeak: () -> Unit
+    onToggleSpeak: () -> Unit,
+    onToggleMedication: (String, Boolean) -> Unit = { _, _ -> },
+    onOpenCalendarTab: () -> Unit = {},
+    onAskAboutItem: (String) -> Unit = {}
 ) {
     val isAssistant = message.role == "model"
     Row(
@@ -1137,6 +1223,18 @@ private fun WhatsAppStyleChatBubble(
                     isAssistant = isAssistant,
                     isStreaming = isStreaming
                 )
+
+                if (isAssistant && !isStreaming) {
+                    InlineChatScheduleCards(
+                        assistantText = message.text,
+                        precedingUserText = precedingUserText,
+                        medications = medications,
+                        events = events,
+                        onToggleMedication = onToggleMedication,
+                        onOpenCalendarTab = onOpenCalendarTab,
+                        onAskAboutItem = onAskAboutItem
+                    )
+                }
             }
         }
     }

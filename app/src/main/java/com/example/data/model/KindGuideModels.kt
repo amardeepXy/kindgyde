@@ -125,6 +125,18 @@ data class SafetyAlert(
 )
 
 @IgnoreExtraProperties
+data class SosCaptureItem(
+    @DocumentId val id: String = "",
+    val alertId: String = "",
+    val memberUids: List<String> = emptyList(),
+    val authorUid: String = "",
+    val source: String = "screenshot",
+    val sequenceIndex: Long = 1L,
+    val imageBase64: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null
+)
+
+@IgnoreExtraProperties
 data class ConversationMessage(
     @DocumentId val id: String = "",
     val memberUids: List<String> = emptyList(),
@@ -135,5 +147,6 @@ data class ConversationMessage(
     val stepNumber: Long = 0L,
     val totalSteps: Long = 0L,
     val isStuckFlagged: Boolean = false,
+    val threadId: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null
 )

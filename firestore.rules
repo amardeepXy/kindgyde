@@ -122,6 +122,15 @@ service cloud.firestore {
              data.resolved is bool;
     }
 
+    function isValidSosCapture(data) {
+      return isValidMemberArray(data.memberUids) &&
+             data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+             data.alertId is string && isValidId(data.alertId) &&
+             data.source in ['screenshot', 'front_camera', 'back_camera'] &&
+             data.sequenceIndex is int && data.sequenceIndex >= 1 && data.sequenceIndex <= 10 &&
+             data.imageBase64 is string && data.imageBase64.size() >= 1 && data.imageBase64.size() <= 350000;
+    }
+
     function isValidConversationMessage(data) {
       return isValidMemberArray(data.memberUids) &&
              data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
@@ -130,7 +139,8 @@ service cloud.firestore {
              data.guideStepTitle is string && data.guideStepTitle.size() <= 200 &&
              data.stepNumber is int && data.stepNumber >= 0 && data.stepNumber <= 30 &&
              data.totalSteps is int && data.totalSteps >= 0 && data.totalSteps <= 30 &&
-             data.isStuckFlagged is bool;
+             data.isStuckFlagged is bool &&
+             (!('threadId' in data) || (data.threadId is string && data.threadId.size() <= 128));
     }
 
     function isParentCircleMember(circleId) {
@@ -412,6 +422,32 @@ service cloud.firestore {
                              incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt'])
                            )
                          );
+
+        match /captures/{captureId} {
+          allow get, delete: if isSignedIn() && isValidId(captureId) && request.auth.uid in existing().memberUids;
+          allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+          allow create: if isSignedIn() &&
+                           isValidId(captureId) &&
+                           incoming().authorUid == request.auth.uid &&
+                           incoming().alertId == alertId &&
+                           incoming().keys().hasAll(['alertId', 'memberUids', 'authorUid', 'source', 'sequenceIndex', 'imageBase64', 'createdAt']) &&
+                           incoming().keys().hasOnly(['alertId', 'memberUids', 'authorUid', 'source', 'sequenceIndex', 'imageBase64', 'createdAt']) &&
+                           incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                           isValidSosCapture(incoming()) &&
+                           matchesParentMembers(circleId, incoming());
+          allow update: if isSignedIn() &&
+                           isValidId(captureId) &&
+                           isValidSosCapture(incoming()) &&
+                           incoming().authorUid == existing().authorUid &&
+                           incoming().alertId == existing().alertId &&
+                           incoming().source == existing().source &&
+                           incoming().sequenceIndex == existing().sequenceIndex &&
+                           incoming().imageBase64 == existing().imageBase64 &&
+                           incoming().createdAt == existing().createdAt &&
+                           isParentCircleMember(circleId) &&
+                           incoming().memberUids.hasAll(existing().memberUids) &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['memberUids']);
+        }
       }
 
       match /conversations/{msgId} {
@@ -421,7 +457,7 @@ service cloud.firestore {
                          isValidId(msgId) &&
                          incoming().authorUid == request.auth.uid &&
                          incoming().keys().hasAll(['memberUids', 'authorUid', 'role', 'text', 'guideStepTitle', 'stepNumber', 'totalSteps', 'isStuckFlagged', 'createdAt']) &&
-                         incoming().keys().hasOnly(['memberUids', 'authorUid', 'role', 'text', 'guideStepTitle', 'stepNumber', 'totalSteps', 'isStuckFlagged', 'createdAt']) &&
+                         incoming().keys().hasOnly(['memberUids', 'authorUid', 'role', 'text', 'guideStepTitle', 'stepNumber', 'totalSteps', 'isStuckFlagged', 'threadId', 'createdAt']) &&
                          incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
                          isValidConversationMessage(incoming()) &&
                          matchesParentMembers(circleId, incoming());
@@ -430,7 +466,8 @@ service cloud.firestore {
                          isValidConversationMessage(incoming()) &&
                          incoming().authorUid == existing().authorUid &&
                          incoming().role == existing().role &&
-                         incoming().createdAt == existing().createdAt && (
+                         incoming().createdAt == existing().createdAt &&
+                         (!('threadId' in incoming()) || ('threadId' in existing() && incoming().threadId == existing().threadId)) && (
                            (
                              request.auth.uid in existing().memberUids &&
                              incoming().memberUids == existing().memberUids &&

@@ -11,6 +11,8 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -19,6 +21,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,20 +43,24 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ScreenShare
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.StopScreenShare
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.PanTool
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
@@ -74,6 +81,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -91,6 +99,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -101,14 +110,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.ai.AiGuideStep
 import com.example.ai.GeminiLiveManager
 import com.example.ai.GeminiLiveUiState
+import com.example.ai.GuideSessionCoordinator
 import com.example.ai.LivePhase
+import com.example.ai.LiveTonePreset
 import com.example.ai.LiveTranscriptEntry
 import com.example.service.ScreenGuideAccessibilityService
 import com.example.ui.components.AccessibilityDisclosureDialog
+import com.example.ui.components.SessionTaskHistoryDrawerCard
 import java.util.concurrent.Executors
 
 private data class LiveVoiceOption(
@@ -117,10 +130,11 @@ private data class LiveVoiceOption(
 )
 
 private val LIVE_VOICES = listOf(
-    LiveVoiceOption("AOEDE", "Warm"),
-    LiveVoiceOption("KORE", "Gentle"),
-    LiveVoiceOption("PUCK", "Bright"),
-    LiveVoiceOption("FENRIR", "Deep")
+    LiveVoiceOption("AOEDE", "Warm • Aoede"),
+    LiveVoiceOption("KORE", "Gentle • Kore"),
+    LiveVoiceOption("PUCK", "Bright • Puck"),
+    LiveVoiceOption("FENRIR", "Deep • Fenrir"),
+    LiveVoiceOption("CHARON", "Calm • Charon")
 )
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -129,6 +143,8 @@ fun GeminiLiveScreen(
     liveState: GeminiLiveUiState,
     activeStep: AiGuideStep?,
     isAccessibilityConnected: Boolean,
+    isHighlightEnabled: Boolean,
+    onToggleHighlight: (Boolean) -> Unit,
     onMinimizeBack: () -> Unit,
     onStartLive: (voiceName: String, shareScreen: Boolean) -> Unit,
     onStopLive: () -> Unit,
@@ -138,6 +154,7 @@ fun GeminiLiveScreen(
     onToggleMute: () -> Unit,
     onManualInterrupt: () -> Unit,
     onSelectVoice: (String) -> Unit,
+    onSelectTone: (LiveTonePreset) -> Unit,
     onSendNudge: (String) -> Unit,
     onClearError: () -> Unit,
     modifier: Modifier = Modifier
@@ -147,6 +164,9 @@ fun GeminiLiveScreen(
     var showDisclosure by remember { mutableStateOf(false) }
     var showOptionsSheet by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val sessionTaskHistory by GuideSessionCoordinator.sessionTaskHistory.collectAsStateWithLifecycle()
+    val isTaskHistoryDrawerOpen by GuideSessionCoordinator.isTaskHistoryDrawerOpen.collectAsStateWithLifecycle()
+    val pendingConfirmation by GuideSessionCoordinator.pendingConfirmationAction.collectAsStateWithLifecycle()
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -168,7 +188,11 @@ fun GeminiLiveScreen(
         (if (liveState.liveUserCaption.isNotBlank()) 1 else 0) +
         (if (liveState.liveAiCaption.isNotBlank()) 1 else 0)
 
-    LaunchedEffect(itemCount) {
+    LaunchedEffect(
+        itemCount,
+        liveState.liveUserCaption.length / 24,
+        liveState.liveAiCaption.length / 24
+    ) {
         if (itemCount > 0) {
             listState.animateScrollToItem((itemCount - 1).coerceAtLeast(0))
         }
@@ -196,9 +220,32 @@ fun GeminiLiveScreen(
                     .padding(horizontal = 20.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Text("Live Voice & Tools", style = MaterialTheme.typography.titleLarge)
+                Text("Live Tone, Voice & Prompts", style = MaterialTheme.typography.titleLarge)
 
-                Text("Voice Style", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    text = "Speaking Tone (Applies Live)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    LiveTonePreset.entries.forEach { tone ->
+                        FilterChip(
+                            selected = liveState.selectedTone == tone,
+                            onClick = { onSelectTone(tone) },
+                            label = { Text(tone.label) },
+                            modifier = Modifier.testTag("live_tone_${tone.id}")
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Voice Persona (Applies Live)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -213,6 +260,53 @@ fun GeminiLiveScreen(
                     }
                 }
 
+                // On-Screen Highlighting Toggle
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Floating On-Screen Highlighting",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                text = if (isAccessibilityConnected) {
+                                    "Minimal floating pill toggles button spotlight across apps"
+                                } else {
+                                    "Tap to enable accessibility floating pill across apps"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (isAccessibilityConnected) {
+                            Switch(
+                                checked = isHighlightEnabled,
+                                onCheckedChange = onToggleHighlight,
+                                modifier = Modifier.testTag("live_highlight_switch")
+                            )
+                        } else {
+                            OutlinedButton(
+                                onClick = {
+                                    showOptionsSheet = false
+                                    showDisclosure = true
+                                }
+                            ) {
+                                Text("Enable")
+                            }
+                        }
+                    }
+                }
+
                 Text("Quick Prompts", style = MaterialTheme.typography.labelLarge)
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -221,8 +315,8 @@ fun GeminiLiveScreen(
                     listOf(
                         "What should I tap on my screen?",
                         "Read what my camera sees",
-                        "Explain more simply",
-                        "Add a task for today"
+                        "What tasks do I have today?",
+                        "Tell me a cheerful thought"
                     ).forEach { prompt ->
                         AssistChip(
                             onClick = {
@@ -242,7 +336,7 @@ fun GeminiLiveScreen(
                     OutlinedTextField(
                         value = nudgeInput,
                         onValueChange = { nudgeInput = it },
-                        placeholder = { Text("Type a note to Gemini Live...") },
+                        placeholder = { Text("Type a message to Gemini Live...") },
                         singleLine = true,
                         modifier = Modifier
                             .weight(1f)
@@ -265,19 +359,6 @@ fun GeminiLiveScreen(
                     }
                 }
 
-                if (!isAccessibilityConnected) {
-                    OutlinedButton(
-                        onClick = {
-                            showOptionsSheet = false
-                            showDisclosure = true
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Filled.Layers, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Enable Cross-App Floating Overlay")
-                    }
-                }
                 Spacer(Modifier.height(8.dp))
             }
         }
@@ -298,31 +379,34 @@ fun GeminiLiveScreen(
                             style = MaterialTheme.typography.titleLarge,
                             maxLines = 1
                         )
-                        if (liveState.isActive) {
-                            val badgeText = when {
-                                liveState.isScreenSharing -> "SCREEN"
-                                liveState.isCameraSharing -> "CAMERA"
-                                else -> "LIVE"
-                            }
-                            Surface(
+                        val badgeText = when {
+                            liveState.isScreenSharing -> "SCREEN"
+                            liveState.isCameraSharing -> "CAMERA"
+                            liveState.isActive -> "LIVE"
+                            else -> "READY"
+                        }
+                        Surface(
+                            color = if (liveState.isScreenSharing || liveState.isCameraSharing) {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            } else if (liveState.isActive) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            shape = MaterialTheme.shapes.small
+                        ) {
+                            Text(
+                                text = badgeText,
+                                style = MaterialTheme.typography.labelMedium,
                                 color = if (liveState.isScreenSharing || liveState.isCameraSharing) {
-                                    MaterialTheme.colorScheme.secondaryContainer
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                } else if (liveState.isActive) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
                                 } else {
-                                    MaterialTheme.colorScheme.primaryContainer
+                                    MaterialTheme.colorScheme.onSurfaceVariant
                                 },
-                                shape = MaterialTheme.shapes.small
-                            ) {
-                                Text(
-                                    text = badgeText,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (liveState.isScreenSharing || liveState.isCameraSharing) {
-                                        MaterialTheme.colorScheme.onSecondaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    },
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
                         }
                     }
                 },
@@ -335,21 +419,36 @@ fun GeminiLiveScreen(
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Minimize Gemini Live"
+                            contentDescription = "Minimize Gemini Live to Chat"
                         )
                     }
                 },
                 actions = {
-                    IconButton(
+                    Surface(
                         onClick = { showOptionsSheet = true },
+                        shape = RoundedCornerShapePill,
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
                         modifier = Modifier
-                            .size(48.dp)
+                            .padding(end = 8.dp)
                             .testTag("live_options_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Tune,
-                            contentDescription = "Voice and text options"
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Tune,
+                                contentDescription = "Change tone and voice",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = liveState.selectedTone.label.substringBefore(" "),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -381,7 +480,7 @@ fun GeminiLiveScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Column(
@@ -390,20 +489,104 @@ fun GeminiLiveScreen(
                     .fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Visual Stage: Live Camera Preview OR Animated Gemini Live Orb
+                // Quick Live Tone Selector Strip (single-tap tone switching right on screen)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    LiveTonePreset.entries.forEach { tone ->
+                        FilterChip(
+                            selected = liveState.selectedTone == tone,
+                            onClick = { onSelectTone(tone) },
+                            leadingIcon = if (liveState.selectedTone == tone) {
+                                {
+                                    Icon(
+                                        Icons.Filled.AutoAwesome,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            } else {
+                                null
+                            },
+                            label = {
+                                Text(tone.label, style = MaterialTheme.typography.labelMedium)
+                            }
+                        )
+                    }
+                    FilterChip(
+                        selected = isTaskHistoryDrawerOpen,
+                        onClick = { GuideSessionCoordinator.toggleTaskHistoryDrawer() },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.Checklist,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = if (sessionTaskHistory.isNotEmpty()) {
+                                    "Task History (${sessionTaskHistory.size})"
+                                } else {
+                                    "Task History"
+                                },
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        },
+                        modifier = Modifier.testTag("live_task_history_button")
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = { showOptionsSheet = true },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.RecordVoiceOver,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = liveState.selectedVoice.lowercase()
+                                    .replaceFirstChar { it.uppercase() },
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    )
+                }
+
+                AnimatedVisibility(visible = isTaskHistoryDrawerOpen) {
+                    SessionTaskHistoryDrawerCard(
+                        steps = sessionTaskHistory,
+                        onClearHistory = { GuideSessionCoordinator.clearSessionTaskHistory() },
+                        onCloseDrawer = { GuideSessionCoordinator.setTaskHistoryDrawerOpen(false) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Visual Stage: Live Camera Viewfinder OR Animated Gemini Live Orb
+                val stageBorderColor by animateColorAsState(
+                    targetValue = when (liveState.phase) {
+                        LivePhase.AI_SPEAKING -> MaterialTheme.colorScheme.primary
+                        LivePhase.INTERRUPTED -> MaterialTheme.colorScheme.tertiary
+                        LivePhase.LISTENING -> MaterialTheme.colorScheme.secondary
+                        LivePhase.ERROR -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.outline
+                    },
+                    animationSpec = tween(durationMillis = 160),
+                    label = "stage_border_color"
+                )
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surface,
                     border = BorderStroke(
                         width = 1.dp,
-                        color = when (liveState.phase) {
-                            LivePhase.AI_SPEAKING -> MaterialTheme.colorScheme.primary
-                            LivePhase.INTERRUPTED -> MaterialTheme.colorScheme.tertiary
-                            LivePhase.LISTENING -> MaterialTheme.colorScheme.secondary
-                            LivePhase.ERROR -> MaterialTheme.colorScheme.error
-                            else -> MaterialTheme.colorScheme.outline
-                        }
+                        color = stageBorderColor
                     )
                 ) {
                     Column(
@@ -416,7 +599,7 @@ fun GeminiLiveScreen(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(200.dp)
+                                    .height(228.dp)
                                     .clip(MaterialTheme.shapes.medium)
                             ) {
                                 LiveCameraPreviewStream(
@@ -426,6 +609,20 @@ fun GeminiLiveScreen(
                                     },
                                     modifier = Modifier.fillMaxSize()
                                 )
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+                                    shape = RoundedCornerShapePill,
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(10.dp)
+                                ) {
+                                    Text(
+                                        text = "Camera Live • Ask Anything",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                    )
+                                }
                                 FilledTonalIconButton(
                                     onClick = onFlipCamera,
                                     modifier = Modifier
@@ -450,18 +647,19 @@ fun GeminiLiveScreen(
 
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            text = when (liveState.phase) {
-                                LivePhase.CONNECTING -> "Connecting to Gemini Live..."
-                                LivePhase.LISTENING -> when {
+                            text = when {
+                                liveState.isSwitchingVoice -> "Switching voice smoothly..."
+                                liveState.phase == LivePhase.CONNECTING -> "Connecting to KindGuide Live..."
+                                liveState.phase == LivePhase.LISTENING -> when {
                                     liveState.isMuted -> "Microphone Muted"
                                     liveState.isCameraSharing -> "Watching Camera & Listening"
                                     liveState.isScreenSharing -> "Watching Screen & Listening"
                                     else -> "Listening — speak naturally"
                                 }
-                                LivePhase.AI_SPEAKING -> "Speaking — talk anytime to interrupt"
-                                LivePhase.INTERRUPTED -> "Interrupted — listening to you"
-                                LivePhase.ERROR -> "Live connection paused"
-                                LivePhase.IDLE -> "Tap Start below to talk live"
+                                liveState.phase == LivePhase.AI_SPEAKING -> "Speaking — talk anytime to interrupt"
+                                liveState.phase == LivePhase.INTERRUPTED -> "Interrupted — listening to you"
+                                liveState.phase == LivePhase.ERROR -> "Live connection paused"
+                                else -> "Tap Start below to talk live"
                             },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
@@ -484,6 +682,49 @@ fun GeminiLiveScreen(
                                 }
                             )
                         }
+
+                        // Compact cross-app floating pill control when Screen Sharing
+                        AnimatedVisibility(visible = liveState.isScreenSharing) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.padding(top = 10.dp)
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    FilterChip(
+                                        selected = isHighlightEnabled,
+                                        onClick = {
+                                            if (isAccessibilityConnected) {
+                                                onToggleHighlight(!isHighlightEnabled)
+                                            } else {
+                                                showDisclosure = true
+                                            }
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Filled.Layers,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        },
+                                        label = {
+                                            Text(
+                                                if (!isAccessibilityConnected) {
+                                                    "Enable Highlight Pill"
+                                                } else if (isHighlightEnabled) {
+                                                    "Highlight ON"
+                                                } else {
+                                                    "Highlight OFF"
+                                                }
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
                         if (liveState.phase == LivePhase.ERROR) {
                             Spacer(Modifier.height(8.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -504,31 +745,109 @@ fun GeminiLiveScreen(
                     }
                 }
 
-                // Active Step Banner (if guiding)
-                if (activeStep != null) {
+                // Active Step Banner (when guiding & highlighting enabled)
+                if (activeStep != null && isHighlightEnabled) {
+                    val isCorrection = activeStep.isCorrection
+                    val isPendingConfirm = pendingConfirmation != null || activeStep.requiresConfirmation
+                    val actionLabel = pendingConfirmation?.targetLabel?.ifBlank { "Send" }
+                        ?: activeStep.targetButtonHint.ifBlank { "Send" }
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isCorrection) {
+                                MaterialTheme.colorScheme.errorContainer
+                            } else {
+                                MaterialTheme.colorScheme.surface
+                            }
+                        ),
+                        border = BorderStroke(
+                            width = 2.dp,
+                            color = if (isCorrection) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            }
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             Text(
-                                text = "Step ${activeStep.stepNumber}/${activeStep.totalSteps} • ${activeStep.stepTitle}",
+                                text = when {
+                                    isCorrection -> "⚠️ Wrong Area Tapped • Step ${activeStep.stepNumber}/${activeStep.totalSteps}"
+                                    isPendingConfirm -> "✋ Confirm Action • ${activeStep.stepTitle}"
+                                    else -> "Step ${activeStep.stepNumber}/${activeStep.totalSteps} • ${activeStep.stepTitle}"
+                                },
                                 style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary
+                                fontWeight = FontWeight.Bold,
+                                color = if (isCorrection) {
+                                    MaterialTheme.colorScheme.onErrorContainer
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                }
                             )
-                            Spacer(Modifier.height(2.dp))
                             Text(
                                 text = activeStep.instruction,
                                 style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = if (isCorrection) {
+                                    MaterialTheme.colorScheme.onErrorContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                }
                             )
-                            if (activeStep.targetButtonHint.isNotBlank()) {
-                                Text(
-                                    text = "Tap: ${activeStep.targetButtonHint}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.secondary
-                                )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (activeStep.targetButtonHint.isNotBlank()) {
+                                    Text(
+                                        text = if (isCorrection) {
+                                            "👉 Go back / Tap: ${activeStep.targetButtonHint}"
+                                        } else {
+                                            "👆 Highlighting: ${activeStep.targetButtonHint}"
+                                        },
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isCorrection) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.secondary
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                if (isPendingConfirm) {
+                                    Button(
+                                        onClick = { GuideSessionCoordinator.confirmPendingAction() },
+                                        modifier = Modifier.testTag("live_confirm_send_button")
+                                    ) {
+                                        Text("✅ $actionLabel Now")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { GuideSessionCoordinator.cancelPendingAction() },
+                                        modifier = Modifier.testTag("live_cancel_send_button")
+                                    ) {
+                                        Text("✕ Cancel")
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = {
+                                            val targetApp = activeStep.suggestedAppName.trim()
+                                            if (targetApp.isNotBlank() &&
+                                                !targetApp.contains("KindGuide", ignoreCase = true)
+                                            ) {
+                                                ScreenGuideAccessibilityService.launchAppByName(context, targetApp)
+                                            } else {
+                                                onMinimizeBack()
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("live_show_on_screen_button")
+                                    ) {
+                                        Text("Show on Screen")
+                                    }
+                                }
                             }
                         }
                     }
@@ -560,7 +879,7 @@ fun GeminiLiveScreen(
                     }
                 }
 
-                // Live Captions & Conversation Log
+                // Live Captions & Synced Transcript Feed
                 Surface(
                     modifier = Modifier
                         .weight(1f)
@@ -577,7 +896,7 @@ fun GeminiLiveScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "Speak naturally, share your screen for app steps, or tap Camera to show a medicine bottle or letter.",
+                                text = "Ask anything naturally, switch tones above, share your screen for app steps, or tap Camera to show a medicine bottle or letter.",
                                 style = MaterialTheme.typography.bodyLarge,
                                 textAlign = TextAlign.Center,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -617,6 +936,8 @@ fun GeminiLiveScreen(
         }
     }
 }
+
+private val RoundedCornerShapePill = CircleShape
 
 @Composable
 private fun LiveCameraPreviewStream(
@@ -707,14 +1028,14 @@ private fun GeminiLiveOrb(
     val transition = rememberInfiniteTransition(label = "live_orb")
     val pulse by transition.animateFloat(
         initialValue = 0.86f,
-        targetValue = 1.14f,
+        targetValue = 1.15f,
         animationSpec = infiniteRepeatable(
             animation = tween(
                 durationMillis = when (phase) {
-                    LivePhase.AI_SPEAKING -> 580
-                    LivePhase.INTERRUPTED -> 420
-                    LivePhase.CONNECTING -> 880
-                    else -> 1350
+                    LivePhase.AI_SPEAKING -> 460
+                    LivePhase.INTERRUPTED -> 260
+                    LivePhase.CONNECTING -> 620
+                    else -> 1150
                 },
                 easing = FastOutSlowInEasing
             ),
@@ -723,14 +1044,18 @@ private fun GeminiLiveOrb(
         label = "orb_pulse"
     )
 
-    val coreColor: Color = when {
-        isMuted -> MaterialTheme.colorScheme.onSurfaceVariant
-        phase == LivePhase.AI_SPEAKING -> MaterialTheme.colorScheme.primary
-        phase == LivePhase.INTERRUPTED -> MaterialTheme.colorScheme.tertiary
-        phase == LivePhase.LISTENING -> MaterialTheme.colorScheme.secondary
-        phase == LivePhase.ERROR -> MaterialTheme.colorScheme.error
-        else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-    }
+    val coreColor by animateColorAsState(
+        targetValue = when {
+            isMuted -> MaterialTheme.colorScheme.onSurfaceVariant
+            phase == LivePhase.AI_SPEAKING -> MaterialTheme.colorScheme.primary
+            phase == LivePhase.INTERRUPTED -> MaterialTheme.colorScheme.tertiary
+            phase == LivePhase.LISTENING -> MaterialTheme.colorScheme.secondary
+            phase == LivePhase.ERROR -> MaterialTheme.colorScheme.error
+            else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
+        },
+        animationSpec = tween(durationMillis = 160),
+        label = "orb_core_color"
+    )
 
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -740,12 +1065,12 @@ private fun GeminiLiveOrb(
             if (phase == LivePhase.AI_SPEAKING || phase == LivePhase.LISTENING || phase == LivePhase.INTERRUPTED) {
                 drawCircle(
                     color = coreColor.copy(alpha = 0.16f),
-                    radius = baseRadius * (1.42f * pulse),
+                    radius = baseRadius * (1.45f * pulse),
                     center = center
                 )
                 drawCircle(
                     color = coreColor.copy(alpha = 0.34f),
-                    radius = baseRadius * (1.2f * pulse),
+                    radius = baseRadius * (1.22f * pulse),
                     center = center,
                     style = Stroke(width = 4f)
                 )
@@ -889,13 +1214,12 @@ private fun GeminiLiveBottomDock(
             DockActionItem(
                 icon = Icons.Filled.PanTool,
                 label = "Pause",
-                isActive = false,
+                isActive = liveState.phase == LivePhase.AI_SPEAKING,
                 enabled = liveState.phase == LivePhase.AI_SPEAKING,
                 onClick = onManualInterrupt,
                 testTag = "live_interrupt_button"
             )
 
-            // Primary Start / End Live circular button
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 FilledIconButton(
                     onClick = { if (liveState.isActive) onStopLive() else onStartLive() },
@@ -935,7 +1259,7 @@ private fun GeminiLiveBottomDock(
 
 @Composable
 private fun DockActionItem(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     label: String,
     isActive: Boolean,
     enabled: Boolean = true,

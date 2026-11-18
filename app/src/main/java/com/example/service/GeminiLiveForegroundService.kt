@@ -35,7 +35,28 @@ class GeminiLiveForegroundService : Service() {
     private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
     private var lastFrameCapturedMs = 0L
+    private var latestCapturedBitmap: Bitmap? = null
+    private val bitmapLock = Any()
     private var isForegroundStarted = false
+
+    private val heartbeatFrameRunnable = object : Runnable {
+        override fun run() {
+            val handler = captureHandler ?: return
+            if (mediaProjection == null) return
+            val now = System.currentTimeMillis()
+            if (now - lastFrameCapturedMs >= 1300L) {
+                val cached = synchronized(bitmapLock) {
+                    latestCapturedBitmap?.takeIf { !it.isRecycled }?.copy(Bitmap.Config.ARGB_8888, false)
+                }
+                if (cached != null) {
+                    lastFrameCapturedMs = now
+                    GeminiLiveManager.sendScreenFrame(cached, sourceLabel = "MediaProjection")
+                    cached.recycle()
+                }
+            }
+            handler.postDelayed(this, 1300L)
+        }
+    }
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -149,11 +170,13 @@ class GeminiLiveForegroundService : Service() {
 
         val thread = HandlerThread("KindGuideLiveCapture").apply { start() }
         captureThread = thread
-        captureHandler = Handler(thread.looper)
+        val handler = Handler(thread.looper)
+        captureHandler = handler
 
         val metrics = resources.displayMetrics
         val (w, h) = scaleTargetSize(metrics.widthPixels, metrics.heightPixels)
         setupVirtualDisplayAndReader(w, h)
+        handler.postDelayed(heartbeatFrameRunnable, 1300L)
         GeminiLiveManager.setScreenSharingActive(true)
     }
 
@@ -170,10 +193,6 @@ class GeminiLiveForegroundService : Service() {
         reader.setOnImageAvailableListener({ r ->
             val image = runCatching { r.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
             try {
-                val now = System.currentTimeMillis()
-                if (now - lastFrameCapturedMs < 900L) return@setOnImageAvailableListener
-                lastFrameCapturedMs = now
-
                 val planes = image.planes
                 if (planes.isEmpty()) return@setOnImageAvailableListener
                 val plane = planes[0]
@@ -192,7 +211,17 @@ class GeminiLiveForegroundService : Service() {
                 } else {
                     rawBitmap
                 }
-                GeminiLiveManager.sendScreenFrame(cleanBitmap, sourceLabel = "MediaProjection")
+
+                synchronized(bitmapLock) {
+                    latestCapturedBitmap?.recycle()
+                    latestCapturedBitmap = cleanBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                }
+
+                val now = System.currentTimeMillis()
+                if (now - lastFrameCapturedMs >= 850L) {
+                    lastFrameCapturedMs = now
+                    GeminiLiveManager.sendScreenFrame(cleanBitmap, sourceLabel = "MediaProjection")
+                }
                 cleanBitmap.recycle()
             } catch (e: Exception) {
                 Log.w(TAG, "Error capturing live screen frame", e)
@@ -215,6 +244,7 @@ class GeminiLiveForegroundService : Service() {
     }
 
     private fun stopScreenCaptureOnly() {
+        captureHandler?.removeCallbacks(heartbeatFrameRunnable)
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
         runCatching { imageReader?.close() }
@@ -225,6 +255,10 @@ class GeminiLiveForegroundService : Service() {
         runCatching { captureThread?.quitSafely() }
         captureThread = null
         captureHandler = null
+        synchronized(bitmapLock) {
+            latestCapturedBitmap?.recycle()
+            latestCapturedBitmap = null
+        }
         GeminiLiveManager.setScreenSharingActive(false)
     }
 

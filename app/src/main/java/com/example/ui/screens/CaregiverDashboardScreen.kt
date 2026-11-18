@@ -1,18 +1,29 @@
 package com.example.ui.screens
 
+import android.graphics.BitmapFactory
+import android.util.Base64
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -25,6 +36,7 @@ import androidx.compose.material.icons.filled.Elderly
 import androidx.compose.material.icons.filled.FamilyRestroom
 import androidx.compose.material.icons.filled.Medication
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -45,15 +57,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.data.model.SosCaptureItem
 import com.example.ui.components.EmptyFriendlyState
 import com.example.ui.components.WarmSectionCard
 import com.example.ui.state.CircleDashboardBundle
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 @Composable
 fun CaregiverDashboardScreen(
@@ -76,6 +95,7 @@ fun CaregiverDashboardScreen(
         emergencyPhone: String,
         newPin: String
     ) -> Unit,
+    observeAlertCaptures: (circleId: String, alertId: String) -> Flow<List<SosCaptureItem>> = { _, _ -> flowOf(emptyList()) },
     modifier: Modifier = Modifier
 ) {
     val circle = bundle.circle
@@ -85,6 +105,15 @@ fun CaregiverDashboardScreen(
     var showPlaceDialog by remember { mutableStateOf(false) }
     var showVoiceDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var previewCapture by remember { mutableStateOf<SosCaptureItem?>(null) }
+
+    val activePreview = previewCapture
+    if (activePreview != null) {
+        SosCapturePreviewDialog(
+            capture = activePreview,
+            onDismiss = { previewCapture = null }
+        )
+    }
 
     if (showTaskDialog) {
         CaregiverInputDialog(
@@ -324,20 +353,113 @@ fun CaregiverDashboardScreen(
                             if (idx > 0) {
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                             }
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = alert.type.uppercase().replace("_", " "),
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                                Text(text = alert.message, style = MaterialTheme.typography.bodyLarge)
-                                Button(
-                                    onClick = { onResolveAlert(alert.id) },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.secondary
-                                    )
+                            if (alert.type == "sos") {
+                                val captures by remember(circle.id, alert.id) {
+                                    observeAlertCaptures(circle.id, alert.id)
+                                }.collectAsStateWithLifecycle(initialValue = emptyList())
+
+                                Surface(
+                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
+                                    shape = RoundedCornerShape(14.dp),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("caregiver_sos_alert_card_${alert.id}")
                                 ) {
-                                    Text("Resolve")
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = "URGENT SOS",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.error
+                                            )
+                                            Button(
+                                                onClick = { onResolveAlert(alert.id) },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = MaterialTheme.colorScheme.secondary
+                                                ),
+                                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                                modifier = Modifier.heightIn(min = 42.dp)
+                                            ) {
+                                                Text("Resolve")
+                                            }
+                                        }
+
+                                        Text(
+                                            text = alert.message,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            fontWeight = FontWeight.Medium
+                                        )
+
+                                        if (captures.isNotEmpty()) {
+                                            Text(
+                                                text = "Screen & Camera Photos (${captures.size})",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onErrorContainer
+                                            )
+                                            LazyRow(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .testTag("sos_captures_row_${alert.id}"),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                items(
+                                                    items = captures,
+                                                    key = { it.id.ifBlank { "${it.source}_${it.sequenceIndex}" } }
+                                                ) { capture ->
+                                                    SosCaptureThumbnailCard(
+                                                        capture = capture,
+                                                        onClick = { previewCapture = capture }
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.PhotoCamera,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Text(
+                                                    text = "Receiving screenshot & front/back camera captures...",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = alert.type.uppercase().replace("_", " "),
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                    Text(text = alert.message, style = MaterialTheme.typography.bodyLarge)
+                                    Button(
+                                        onClick = { onResolveAlert(alert.id) },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.secondary
+                                        )
+                                    ) {
+                                        Text("Resolve")
+                                    }
                                 }
                             }
                         }
@@ -550,3 +672,125 @@ private fun CareCircleSettingsDialog(
         }
     )
 }
+
+@Composable
+private fun SosCaptureThumbnailCard(
+    capture: SosCaptureItem,
+    onClick: () -> Unit
+) {
+    val bitmap = remember(capture.id, capture.imageBase64) {
+        runCatching {
+            val bytes = Base64.decode(capture.imageBase64, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }.getOrNull()
+    }
+    val label = formatSosCaptureLabel(capture)
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .width(96.dp)
+            .height(118.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .testTag("sos_capture_thumb_${capture.sequenceIndex}")
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = label,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PhotoCamera,
+                        contentDescription = label,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SosCapturePreviewDialog(
+    capture: SosCaptureItem,
+    onDismiss: () -> Unit
+) {
+    val bitmap = remember(capture.id, capture.imageBase64) {
+        runCatching {
+            val bytes = Base64.decode(capture.imageBase64, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }.getOrNull()
+    }
+    val label = formatSosCaptureLabel(capture)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("sos_capture_preview_dialog"),
+        title = {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = label,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 380.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                )
+            } else {
+                Text("Could not decode image preview.", style = MaterialTheme.typography.bodyMedium)
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+private fun formatSosCaptureLabel(capture: SosCaptureItem): String {
+    return when (capture.source) {
+        "screenshot" -> "Screen"
+        "front_camera" -> {
+            val frontNum = (capture.sequenceIndex - 1L).coerceAtLeast(1L)
+            "Front $frontNum"
+        }
+        "back_camera" -> {
+            val backNum = (capture.sequenceIndex - 4L).coerceAtLeast(1L)
+            "Back $backNum"
+        }
+        else -> "Photo ${capture.sequenceIndex}"
+    }
+}
+

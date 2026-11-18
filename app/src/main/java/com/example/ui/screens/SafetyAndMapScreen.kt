@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
@@ -40,11 +41,15 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Emergency
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Medication
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Warning
@@ -61,6 +66,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -68,6 +74,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -85,9 +92,11 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.R
 import com.example.ai.GuideSessionCoordinator
+import com.example.data.local.MedicationScheduleEntity
 import com.example.data.model.CareCircle
 import com.example.data.model.MedicationItem
 import com.example.data.model.SafePlace
+import com.example.notifications.MedicationNotificationManager
 import com.example.ui.components.EmptyFriendlyState
 import com.example.ui.components.WarmSectionCard
 import com.example.ui.state.ScamUiState
@@ -103,6 +112,15 @@ private data class MapPinNode(
     val lat: Double,
     val lng: Double,
     val isHome: Boolean = false
+)
+
+private data class DisplayedMedicationEntry(
+    val id: String,
+    val name: String,
+    val dosage: String,
+    val scheduleSlot: String,
+    val takenToday: Boolean,
+    val schedule: MedicationScheduleEntity
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -124,7 +142,13 @@ fun SafetyAndMapScreen(
     onResetScam: () -> Unit,
     onSendCheckIn: (String) -> Unit,
     onTriggerSos: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    localSchedules: List<MedicationScheduleEntity> = emptyList(),
+    onAddMedicationWithSchedule: ((name: String, dosage: String, slot: String, hour: Int, minute: Int, reminderEnabled: Boolean) -> Unit)? = null,
+    onUpdateMedicationReminder: (id: String, enabled: Boolean, hour: Int, minute: Int) -> Unit = { _, _, _, _ -> },
+    onUpdateMedicationSchedule: ((id: String, dosage: String, enabled: Boolean, hour: Int, minute: Int) -> Unit)? = null,
+    onTestMedicationReminder: (MedicationScheduleEntity) -> Unit = {},
+    onOpenMedicationHistory: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val fusedLocationClient = remember(context) {
@@ -170,11 +194,34 @@ fun SafetyAndMapScreen(
     }
 
     var showAddMedDialog by remember { mutableStateOf(false) }
+    var editingReminderSchedule by remember { mutableStateOf<MedicationScheduleEntity?>(null) }
+    var pendingNotificationSchedule by remember { mutableStateOf<MedicationScheduleEntity?>(null) }
     var showAddPlaceDialog by remember { mutableStateOf(false) }
     var showScamSheet by remember { mutableStateOf(false) }
     var scamInput by remember { mutableStateOf("") }
     var scamBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var selectedPinId by remember { mutableStateOf("home") }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val pending = pendingNotificationSchedule
+        pendingNotificationSchedule = null
+        if (granted && pending != null) {
+            onTestMedicationReminder(pending)
+        }
+    }
+
+    val ensureNotificationsThen: (MedicationScheduleEntity?, () -> Unit) -> Unit = { testTarget, action ->
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !MedicationNotificationManager.hasNotificationPermission(context)
+        ) {
+            pendingNotificationSchedule = testTarget
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            action()
+        }
+    }
 
     val scamScreenshotPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -198,9 +245,34 @@ fun SafetyAndMapScreen(
     if (showAddMedDialog) {
         AddMedicationDialog(
             onDismiss = { showAddMedDialog = false },
-            onSave = { name, dosage, slot ->
-                onAddMedication(name, dosage, slot)
+            onSave = { name, dosage, slot, hour, minute, enabled ->
+                if (enabled) {
+                    ensureNotificationsThen(null) {}
+                }
+                if (onAddMedicationWithSchedule != null) {
+                    onAddMedicationWithSchedule(name, dosage, slot, hour, minute, enabled)
+                } else {
+                    onAddMedication(name, dosage, slot)
+                }
                 showAddMedDialog = false
+            }
+        )
+    }
+
+    editingReminderSchedule?.let { schedule ->
+        EditMedicationReminderDialog(
+            schedule = schedule,
+            onDismiss = { editingReminderSchedule = null },
+            onSave = { dosage, enabled, hour, minute ->
+                if (enabled) {
+                    ensureNotificationsThen(null) {}
+                }
+                if (onUpdateMedicationSchedule != null) {
+                    onUpdateMedicationSchedule(schedule.id, dosage, enabled, hour, minute)
+                } else {
+                    onUpdateMedicationReminder(schedule.id, enabled, hour, minute)
+                }
+                editingReminderSchedule = null
             }
         )
     }
@@ -252,19 +324,20 @@ fun SafetyAndMapScreen(
                         .testTag("scam_text_input"),
                     maxLines = 4
                 )
+                val isCheckingScam = scamState is ScamUiState.Loading || scamState is ScamUiState.Streaming
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Button(
                         onClick = { onCheckScam(scamInput, scamBitmap) },
-                        enabled = scamInput.isNotBlank() && scamState !is ScamUiState.Loading,
+                        enabled = scamInput.isNotBlank() && !isCheckingScam,
                         modifier = Modifier
                             .weight(1f)
                             .height(52.dp)
                             .testTag("check_scam_text_button")
                     ) {
-                        if (scamState is ScamUiState.Loading) {
+                        if (isCheckingScam) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(20.dp),
                                 color = MaterialTheme.colorScheme.onPrimary
@@ -281,7 +354,7 @@ fun SafetyAndMapScreen(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
                         },
-                        enabled = scamState !is ScamUiState.Loading,
+                        enabled = !isCheckingScam,
                         modifier = Modifier
                             .weight(1f)
                             .height(52.dp)
@@ -294,6 +367,38 @@ fun SafetyAndMapScreen(
                 }
 
                 when (scamState) {
+                    is ScamUiState.Loading -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(22.dp))
+                            Text("Checking message safely...", style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                    is ScamUiState.Streaming -> {
+                        WarmSectionCard {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                Text(
+                                    text = "Analyzing...",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            if (scamState.partialText.isNotBlank()) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    text = scamState.partialText,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        }
+                    }
                     is ScamUiState.Result -> {
                         val res = scamState.data
                         val borderCol = when (res.verdict) {
@@ -388,11 +493,56 @@ fun SafetyAndMapScreen(
         }
     }
     val activePin = allPins.firstOrNull { it.id == selectedPinId } ?: allPins.first()
+    val schedulesById = remember(localSchedules) { localSchedules.associateBy { it.id } }
+    val displayedMedications = remember(medications, localSchedules, schedulesById, circle.id) {
+        val fromCircle = medications.map { med ->
+            val localSchedule = schedulesById[med.id] ?: run {
+                val (defH, defM) = MedicationScheduleEntity.defaultTimeForSlot(med.scheduleSlot)
+                MedicationScheduleEntity(
+                    id = med.id,
+                    circleId = circle.id,
+                    name = med.name,
+                    dosage = med.dosage,
+                    scheduleSlot = med.scheduleSlot,
+                    reminderHour = defH,
+                    reminderMinute = defM,
+                    reminderEnabled = true,
+                    takenToday = med.takenToday
+                )
+            }
+            val effectiveDosage = localSchedule.dosage.trim()
+                .ifBlank { med.dosage.trim() }
+                .ifBlank { "As prescribed" }
+            DisplayedMedicationEntry(
+                id = med.id,
+                name = med.name.ifBlank { localSchedule.name },
+                dosage = effectiveDosage,
+                scheduleSlot = med.scheduleSlot.ifBlank { localSchedule.scheduleSlot },
+                takenToday = med.takenToday || localSchedule.isTakenOnSameLocalDay(),
+                schedule = localSchedule.copy(dosage = effectiveDosage)
+            )
+        }
+        val knownIds = medications.map { it.id }.toHashSet()
+        val extraRoomOnly = localSchedules
+            .filter { it.id !in knownIds }
+            .map { sched ->
+                DisplayedMedicationEntry(
+                    id = sched.id,
+                    name = sched.name,
+                    dosage = sched.formattedDosage(),
+                    scheduleSlot = sched.scheduleSlot,
+                    takenToday = sched.isTakenOnSameLocalDay(),
+                    schedule = sched
+                )
+            }
+        fromCircle + extraRoomOnly
+    }
 
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(16.dp)
+            .testTag("safety_and_map_lazy_column"),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -614,7 +764,7 @@ fun SafetyAndMapScreen(
             }
         }
 
-        // 3. Medication Reminders
+        // 3. Medication Reminders (backed by local Room `medication_schedules` + daily NotificationManager)
         item {
             WarmSectionCard(modifier = Modifier.widthIn(max = 640.dp)) {
                 Row(
@@ -622,17 +772,38 @@ fun SafetyAndMapScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Daily Medicines", style = MaterialTheme.typography.titleLarge)
-                    OutlinedButton(
-                        onClick = { showAddMedDialog = true },
-                        modifier = Modifier.testTag("add_medication_button")
-                    ) {
-                        Icon(Icons.Filled.Add, contentDescription = null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Add")
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Daily Medicines", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            text = "Saved locally on device with daily reminder alerts",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = onOpenMedicationHistory,
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("open_medication_history_button")
+                        ) {
+                            Icon(Icons.Filled.History, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("History")
+                        }
+                        OutlinedButton(
+                            onClick = { showAddMedDialog = true },
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("add_medication_button")
+                        ) {
+                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Add")
+                        }
                     }
                 }
-                if (medications.isEmpty()) {
+                if (displayedMedications.isEmpty()) {
                     Spacer(Modifier.height(10.dp))
                     EmptyFriendlyState(
                         icon = Icons.Filled.Medication,
@@ -643,10 +814,15 @@ fun SafetyAndMapScreen(
             }
         }
 
-        items(medications, key = { "med_${it.id}" }) { med ->
+        items(displayedMedications, key = { "med_${it.id}" }) { entry ->
+            val localSchedule = entry.schedule
+            val isTaken = entry.takenToday
+
             WarmSectionCard(
-                modifier = Modifier.widthIn(max = 640.dp),
-                borderColor = if (med.takenToday) {
+                modifier = Modifier
+                    .widthIn(max = 640.dp)
+                    .testTag("medication_card_${entry.id}"),
+                borderColor = if (isTaken) {
                     MaterialTheme.colorScheme.secondary
                 } else {
                     MaterialTheme.colorScheme.outline
@@ -656,18 +832,49 @@ fun SafetyAndMapScreen(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
                         Text(
-                            text = "${med.scheduleSlot} • ${med.dosage}",
+                            text = entry.scheduleSlot,
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        Text(med.name, style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            text = entry.name,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("med_dosage_${entry.id}")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Medication,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Dosage: ${entry.dosage}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
+                        }
                     }
                     Button(
-                        onClick = { onToggleMedication(med.id, !med.takenToday) },
+                        onClick = { onToggleMedication(entry.id, !isTaken) },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (med.takenToday) {
+                            containerColor = if (isTaken) {
                                 MaterialTheme.colorScheme.secondary
                             } else {
                                 MaterialTheme.colorScheme.primary
@@ -675,10 +882,10 @@ fun SafetyAndMapScreen(
                         ),
                         modifier = Modifier.height(48.dp)
                     ) {
-                        Text(if (med.takenToday) "Taken" else "Took It")
+                        Text(if (isTaken) "Taken" else "Took It")
                     }
                     IconButton(
-                        onClick = { onDeleteMedication(med.id) },
+                        onClick = { onDeleteMedication(entry.id) },
                         modifier = Modifier.minimumInteractiveComponentSize()
                     ) {
                         Icon(
@@ -686,6 +893,56 @@ fun SafetyAndMapScreen(
                             contentDescription = "Delete medicine",
                             tint = MaterialTheme.colorScheme.error
                         )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = localSchedule.reminderEnabled,
+                        onClick = { editingReminderSchedule = localSchedule },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (localSchedule.reminderEnabled) {
+                                    Icons.Filled.NotificationsActive
+                                } else {
+                                    Icons.Filled.NotificationsOff
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = if (localSchedule.reminderEnabled) {
+                                    "Daily ${localSchedule.formattedReminderTime()}"
+                                } else {
+                                    "Reminder Off (${localSchedule.formattedReminderTime()})"
+                                }
+                            )
+                        },
+                        modifier = Modifier.testTag("edit_med_reminder_chip_${entry.id}")
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            ensureNotificationsThen(localSchedule) {
+                                onTestMedicationReminder(localSchedule)
+                            }
+                        },
+                        modifier = Modifier
+                            .height(40.dp)
+                            .testTag("test_med_reminder_button_${entry.id}")
+                    ) {
+                        Icon(
+                            Icons.Filled.Schedule,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Remind Now")
                     }
                 }
             }
@@ -994,11 +1251,14 @@ private fun launchDirections(context: android.content.Context, lat: Double, lng:
 @Composable
 private fun AddMedicationDialog(
     onDismiss: () -> Unit,
-    onSave: (String, String, String) -> Unit
+    onSave: (String, String, String, Int, Int, Boolean) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
     var dosage by remember { mutableStateOf("1 tablet") }
     var slot by remember { mutableStateOf("Morning") }
+    var reminderHour by remember { mutableIntStateOf(8) }
+    var reminderMinute by remember { mutableIntStateOf(0) }
+    var reminderEnabled by remember { mutableStateOf(true) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1009,32 +1269,173 @@ private fun AddMedicationDialog(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("Medicine Name") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("add_med_name_input")
                 )
                 OutlinedTextField(
                     value = dosage,
                     onValueChange = { dosage = it },
                     label = { Text("Dosage (e.g. 1 pill)") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("add_med_dosage_input")
                 )
-                OutlinedTextField(
-                    value = slot,
-                    onValueChange = { slot = it },
-                    label = { Text("Time of Day (Morning / Evening / Bedtime)") },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Text("Time of Day", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("Morning", "Afternoon", "Evening", "Bedtime").forEach { option ->
+                        FilterChip(
+                            selected = slot == option,
+                            onClick = {
+                                slot = option
+                                val (h, m) = MedicationScheduleEntity.defaultTimeForSlot(option)
+                                reminderHour = h
+                                reminderMinute = m
+                            },
+                            label = { Text(option) }
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Daily Notification", style = MaterialTheme.typography.titleMedium)
+                    Switch(
+                        checked = reminderEnabled,
+                        onCheckedChange = { reminderEnabled = it }
+                    )
+                }
+                if (reminderEnabled) {
+                    ReminderTimeStepperRow(
+                        hour = reminderHour,
+                        minute = reminderMinute,
+                        onTimeChanged = { newH, newM ->
+                            reminderHour = newH
+                            reminderMinute = newM
+                        }
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { if (name.isNotBlank()) onSave(name, dosage, slot) },
-                enabled = name.isNotBlank()
+                onClick = {
+                    if (name.isNotBlank()) {
+                        onSave(name, dosage, slot, reminderHour, reminderMinute, reminderEnabled)
+                    }
+                },
+                enabled = name.isNotBlank(),
+                modifier = Modifier.testTag("save_med_button")
             ) { Text("Save") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+@Composable
+private fun EditMedicationReminderDialog(
+    schedule: MedicationScheduleEntity,
+    onDismiss: () -> Unit,
+    onSave: (dosage: String, enabled: Boolean, hour: Int, minute: Int) -> Unit
+) {
+    var dosage by remember(schedule.id) { mutableStateOf(schedule.dosage) }
+    var enabled by remember(schedule.id) { mutableStateOf(schedule.reminderEnabled) }
+    var hour by remember(schedule.id) { mutableIntStateOf(schedule.reminderHour) }
+    var minute by remember(schedule.id) { mutableIntStateOf(schedule.reminderMinute) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Reminder for ${schedule.name}",
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = dosage,
+                    onValueChange = { dosage = it },
+                    label = { Text("Dosage (e.g. 500mg tablet)") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("edit_med_dosage_input")
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Daily Reminder Active", style = MaterialTheme.typography.titleMedium)
+                    Switch(
+                        checked = enabled,
+                        onCheckedChange = { enabled = it }
+                    )
+                }
+                ReminderTimeStepperRow(
+                    hour = hour,
+                    minute = minute,
+                    onTimeChanged = { newH, newM ->
+                        hour = newH
+                        minute = newM
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(dosage, enabled, hour, minute) }) {
+                Text("Update")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ReminderTimeStepperRow(
+    hour: Int,
+    minute: Int,
+    onTimeChanged: (Int, Int) -> Unit
+) {
+    fun shiftMinutes(delta: Int) {
+        val total = ((hour * 60 + minute + delta) % 1440 + 1440) % 1440
+        onTimeChanged(total / 60, total % 60)
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        OutlinedButton(
+            onClick = { shiftMinutes(-15) },
+            modifier = Modifier.height(48.dp)
+        ) { Text("-15m") }
+        Text(
+            text = MedicationScheduleEntity.formatTime(hour, minute),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        OutlinedButton(
+            onClick = { shiftMinutes(15) },
+            modifier = Modifier.height(48.dp)
+        ) { Text("+15m") }
+    }
 }
 
 @Composable

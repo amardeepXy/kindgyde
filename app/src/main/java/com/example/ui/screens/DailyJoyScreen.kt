@@ -51,6 +51,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.ai.GuideSessionCoordinator
 import com.example.ui.components.WarmSectionCard
@@ -75,7 +76,8 @@ fun DailyJoyScreen(
     modifier: Modifier = Modifier
 ) {
     var selectedTriviaIndex by remember(engagementState) { mutableStateOf<Int?>(null) }
-    var isReadingStory by remember { mutableStateOf(false) }
+    val speakingMessageId by GuideSessionCoordinator.speakingMessageId.collectAsStateWithLifecycle()
+    val isReadingStory = speakingMessageId == "daily_story"
 
     Column(
         modifier = modifier
@@ -138,6 +140,43 @@ fun DailyJoyScreen(
                         }
                     }
 
+                    is EngagementUiState.Streaming -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Text(
+                                text = if (isReadingStory) "Streaming & speaking..." else "Writing your story...",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        if (engagementState.partialTitle.isNotBlank()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = engagementState.partialTitle,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        if (engagementState.partialStory.isNotBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = engagementState.partialStory,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                        }
+                        if (isReadingStory) {
+                            Spacer(Modifier.height(10.dp))
+                            OutlinedButton(onClick = { GuideSessionCoordinator.stopTtsOnly() }) {
+                                Icon(Icons.Filled.Stop, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("Stop Audio")
+                            }
+                        }
+                    }
+
                     is EngagementUiState.Error -> {
                         Text(
                             text = engagementState.message,
@@ -170,11 +209,12 @@ fun DailyJoyScreen(
                             Button(
                                 onClick = {
                                     if (isReadingStory) {
-                                        isReadingStory = false
-                                        GuideSessionCoordinator.clearGuideSession()
+                                        GuideSessionCoordinator.stopTtsOnly()
                                     } else {
-                                        isReadingStory = true
-                                        GuideSessionCoordinator.speakText("${content.storyTitle}. ${content.storyBody}")
+                                        GuideSessionCoordinator.speakText(
+                                            text = "${content.storyTitle}. ${content.storyBody}. ${content.reminisceQuestion}",
+                                            messageId = "daily_story"
+                                        )
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(

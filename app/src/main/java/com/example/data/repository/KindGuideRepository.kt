@@ -12,6 +12,7 @@ import com.example.data.model.FamilyPhotoItem
 import com.example.data.model.MedicationItem
 import com.example.data.model.SafePlace
 import com.example.data.model.SafetyAlert
+import com.example.data.model.SosCaptureItem
 import com.example.data.model.VoiceNoteItem
 import com.example.data.model.sha256Hex
 import com.google.firebase.Firebase
@@ -806,6 +807,65 @@ class KindGuideRepository(
             }
         }
 
+    fun observeAlertCaptures(circleId: String, alertId: String, uid: String): Flow<List<SosCaptureItem>> = flow {
+        val path = "careCircles/$circleId/alerts/$alertId/captures"
+        emitAll(
+            db.collection("careCircles").document(circleId)
+                .collection("alerts").document(alertId)
+                .collection("captures")
+                .whereArrayContains("memberUids", uid)
+                .snapshots()
+                .map { snap ->
+                    snap.toObjects(
+                        SosCaptureItem::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ).sortedWith(
+                        compareBy<SosCaptureItem> {
+                            when (it.source) {
+                                "screenshot" -> 0
+                                "front_camera" -> 1
+                                else -> 2
+                            }
+                        }.thenBy { it.sequenceIndex }
+                    )
+                }
+                .logFirestoreErrors(uid, OperationType.LIST, path)
+        )
+    }
+
+    suspend fun addAlertCapture(
+        circleId: String,
+        alertId: String,
+        memberUids: List<String>,
+        source: String,
+        sequenceIndex: Long,
+        imageBase64: String
+    ): Result<String> = runCatching {
+        val uid = requireUserId()
+        val validSource = if (source in listOf("screenshot", "front_camera", "back_camera")) source else "screenshot"
+        val docRef = db.collection("careCircles").document(circleId)
+            .collection("alerts").document(alertId)
+            .collection("captures").document()
+        val payload = mapOf(
+            "alertId" to alertId,
+            "memberUids" to memberUids,
+            "authorUid" to uid,
+            "source" to validSource,
+            "sequenceIndex" to sequenceIndex.coerceIn(1L, 10L),
+            "imageBase64" to imageBase64.take(350_000),
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+        try {
+            docRef.set(payload).await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            throw e
+        }
+        docRef.id
+    }
+
     // --- Conversations ---
 
     fun observeConversations(circleId: String, uid: String): Flow<List<ConversationMessage>> = flow {
@@ -832,7 +892,8 @@ class KindGuideRepository(
         guideStepTitle: String = "",
         stepNumber: Long = 0L,
         totalSteps: Long = 0L,
-        isStuckFlagged: Boolean = false
+        isStuckFlagged: Boolean = false,
+        threadId: String = ""
     ): Result<String> = runCatching {
         val uid = requireUserId()
         val docRef = db.collection("careCircles").document(circleId)
@@ -846,6 +907,7 @@ class KindGuideRepository(
             "stepNumber" to stepNumber.coerceIn(0L, 30L),
             "totalSteps" to totalSteps.coerceIn(0L, 30L),
             "isStuckFlagged" to isStuckFlagged,
+            "threadId" to threadId.trim().take(128),
             "createdAt" to FieldValue.serverTimestamp()
         )
         try {

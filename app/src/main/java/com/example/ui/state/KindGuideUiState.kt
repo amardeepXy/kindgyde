@@ -26,6 +26,7 @@ sealed interface DataUiState<out T> {
 sealed interface ScamUiState {
     data object Idle : ScamUiState
     data object Loading : ScamUiState
+    data class Streaming(val partialText: String) : ScamUiState
     data class Result(val data: ScamCheckResult) : ScamUiState
     data class Error(val message: String) : ScamUiState
 }
@@ -33,6 +34,7 @@ sealed interface ScamUiState {
 sealed interface EngagementUiState {
     data object Idle : EngagementUiState
     data object Loading : EngagementUiState
+    data class Streaming(val partialTitle: String, val partialStory: String) : EngagementUiState
     data class Ready(val content: DailyEngagementContent) : EngagementUiState
     data class Error(val message: String) : EngagementUiState
 }

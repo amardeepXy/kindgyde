@@ -30,8 +30,8 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.Assistant
 import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Shield
@@ -86,19 +86,27 @@ import com.example.auth.attemptAutoSignIn
 import com.example.auth.authStateFlow
 import com.example.auth.signOut
 import com.example.data.firebase.configureAppCheck
+import com.example.data.local.KindGuideDatabase
+import com.example.data.local.MedicationScheduleRepository
 import com.example.data.repository.KindGuideRepository
+import com.example.notifications.MedicationNotificationManager
+import com.example.safety.SosNotificationHelper
 import com.example.service.GeminiLiveForegroundService
 import com.example.service.ScreenGuideAccessibilityService
 import com.example.ui.components.CaregiverPinDialog
+import com.example.ui.components.LiveInAppScreenMonitorEffect
+import com.example.ui.components.LiveScreenCoPilotOverlayHost
 import com.example.ui.components.WarmSectionCard
 import com.example.ui.screens.AuthScreen
 import com.example.ui.screens.CareCircleSetupScreen
 import com.example.ui.screens.CaregiverDashboardScreen
 import com.example.ui.screens.DailyJoyScreen
 import com.example.ui.screens.GeminiLiveScreen
+import com.example.ui.screens.MedicationHistoryScreen
 import com.example.ui.screens.PhotosAndVoiceScreen
 import com.example.ui.screens.SafetyAndMapScreen
 import com.example.ui.screens.SeniorHomeAndCoachScreen
+import com.example.ui.screens.SeniorHomeDashboardScreen
 import com.example.ui.screens.TasksAndCalendarScreen
 import com.example.ui.state.CircleDashboardBundle
 import com.example.ui.state.DataUiState
@@ -118,14 +126,20 @@ private data class SeniorTabItem(
 
 class MainActivity : ComponentActivity() {
     private val openLiveSignal = mutableIntStateOf(0)
+    private val openSafetyTabSignal = mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         configureAppCheck(this, intent)
+        SosNotificationHelper.ensureChannel(this)
+        MedicationNotificationManager.ensureNotificationChannel(this)
 
         if (intent?.getBooleanExtra(GeminiLiveForegroundService.EXTRA_OPEN_LIVE, false) == true) {
             openLiveSignal.intValue += 1
+        }
+        if (intent?.getBooleanExtra(MedicationNotificationManager.EXTRA_OPEN_SAFETY_TAB, false) == true) {
+            openSafetyTabSignal.intValue += 1
         }
 
         val repository = KindGuideRepository(applicationContext)
@@ -135,7 +149,8 @@ class MainActivity : ComponentActivity() {
             KindGuideTheme {
                 KindGuideRootApp(
                     repository = repository,
-                    openLiveSignal = openLiveSignal.intValue
+                    openLiveSignal = openLiveSignal.intValue,
+                    openSafetyTabSignal = openSafetyTabSignal.intValue
                 )
             }
         }
@@ -147,13 +162,17 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra(GeminiLiveForegroundService.EXTRA_OPEN_LIVE, false)) {
             openLiveSignal.intValue += 1
         }
+        if (intent.getBooleanExtra(MedicationNotificationManager.EXTRA_OPEN_SAFETY_TAB, false)) {
+            openSafetyTabSignal.intValue += 1
+        }
     }
 }
 
 @Composable
 private fun KindGuideRootApp(
     repository: KindGuideRepository,
-    openLiveSignal: Int
+    openLiveSignal: Int,
+    openSafetyTabSignal: Int
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -179,13 +198,24 @@ private fun KindGuideRootApp(
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                GuideSessionCoordinator.setAccessibilityConnected(
-                    ScreenGuideAccessibilityService.isEnabled(context)
-                )
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    GuideSessionCoordinator.setKindGuideActivityResumed(true)
+                    GuideSessionCoordinator.onInAppWindowResumed(context.packageName)
+                    GuideSessionCoordinator.setAccessibilityConnected(
+                        ScreenGuideAccessibilityService.isEnabled(context)
+                    )
+                }
+                Lifecycle.Event.ON_PAUSE,
+                Lifecycle.Event.ON_STOP -> {
+                    GuideSessionCoordinator.setKindGuideActivityResumed(false)
+                }
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
+        GuideSessionCoordinator.setKindGuideActivityResumed(true)
+        GuideSessionCoordinator.onInAppWindowResumed(context.packageName)
         GuideSessionCoordinator.setAccessibilityConnected(
             ScreenGuideAccessibilityService.isEnabled(context)
         )
@@ -214,6 +244,7 @@ private fun KindGuideRootApp(
                 user = user,
                 repository = repository,
                 openLiveSignal = openLiveSignal,
+                openSafetyTabSignal = openSafetyTabSignal,
                 onSignOut = {
                     GeminiLiveForegroundService.stopAll(context)
                     GuideSessionCoordinator.clearGuideSession()
@@ -230,9 +261,18 @@ private fun AuthenticatedKindGuideApp(
     user: FirebaseUser,
     repository: KindGuideRepository,
     openLiveSignal: Int,
+    openSafetyTabSignal: Int,
     onSignOut: () -> Unit
 ) {
+    val context = LocalContext.current
     val aiService = remember { KindGuideAiService() }
+    val medScheduleRepo = remember(context) {
+        val db = KindGuideDatabase.getInstance(context.applicationContext)
+        MedicationScheduleRepository(
+            dao = db.medicationScheduleDao(),
+            historyDao = db.medicationHistoryDao()
+        )
+    }
     val viewModel: KindGuideViewModel = viewModel(
         key = user.uid,
         factory = viewModelFactory {
@@ -241,7 +281,9 @@ private fun AuthenticatedKindGuideApp(
                     repository = repository,
                     aiService = aiService,
                     currentUserId = user.uid,
-                    userDisplayName = user.displayName.orEmpty()
+                    userDisplayName = user.displayName.orEmpty(),
+                    medicationScheduleRepository = medScheduleRepo,
+                    appContext = context.applicationContext
                 )
             }
         }
@@ -345,6 +387,7 @@ private fun AuthenticatedKindGuideApp(
                     currentLocation = currentLocation,
                     brainGamesWon = brainGamesWon,
                     openLiveSignal = openLiveSignal,
+                    openSafetyTabSignal = openSafetyTabSignal,
                     snackbarHostState = snackbarHostState,
                     onSignOut = onSignOut
                 )
@@ -364,17 +407,26 @@ private fun CareCircleLoadedShell(
     currentLocation: Pair<Double, Double>?,
     brainGamesWon: Int,
     openLiveSignal: Int,
+    openSafetyTabSignal: Int,
     snackbarHostState: SnackbarHostState,
     onSignOut: () -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     var currentTab by rememberSaveable { mutableStateOf("home") }
+    var showAiAssistantScreen by rememberSaveable { mutableStateOf(false) }
+    var showMedicationHistoryScreen by rememberSaveable { mutableStateOf(false) }
     var showPinDialog by remember { mutableStateOf(false) }
     var showGeminiLiveScreen by rememberSaveable { mutableStateOf(false) }
     var pendingShareScreen by remember { mutableStateOf(false) }
     var pendingVoiceName by remember { mutableStateOf("AOEDE") }
 
+    val sosProgress by viewModel.sosProgress.collectAsStateWithLifecycle()
+    val localMedicationSchedules by viewModel.localMedicationSchedules.collectAsStateWithLifecycle()
+    val medicationHistory by viewModel.medicationHistory.collectAsStateWithLifecycle()
+    val weeklyMedicationHistory by viewModel.weeklyMedicationHistory.collectAsStateWithLifecycle()
+    val historyDateRange by viewModel.historyDateRange.collectAsStateWithLifecycle()
     val liveState by GeminiLiveManager.state.collectAsStateWithLifecycle()
     val activeStep by GuideSessionCoordinator.activeStep.collectAsStateWithLifecycle()
     val lastReply by GuideSessionCoordinator.lastReply.collectAsStateWithLifecycle()
@@ -385,6 +437,55 @@ private fun CareCircleLoadedShell(
     val isReadAloud by GuideSessionCoordinator.voiceReadAloudEnabled.collectAsStateWithLifecycle()
     val isAccessibilityConnected by GuideSessionCoordinator.isAccessibilityConnected.collectAsStateWithLifecycle()
     val isOverlayVisible by GuideSessionCoordinator.isOverlayVisible.collectAsStateWithLifecycle()
+    val isHighlightEnabled by GuideSessionCoordinator.isHighlightEnabled.collectAsStateWithLifecycle()
+    val targetHighlightBounds by GuideSessionCoordinator.targetHighlightBounds.collectAsStateWithLifecycle()
+    val stepMonitorBanner by GuideSessionCoordinator.stepMonitorBanner.collectAsStateWithLifecycle()
+    val activeConversationId by GuideSessionCoordinator.activeConversationId.collectAsStateWithLifecycle()
+
+    LiveInAppScreenMonitorEffect(
+        liveState = liveState,
+        activeStep = activeStep,
+        isOverlayVisible = isOverlayVisible,
+        showGeminiLiveScreen = showGeminiLiveScreen
+    )
+
+    LaunchedEffect(bundle.circle.id) {
+        GuideSessionCoordinator.startNewConversation()
+    }
+
+    // Notify Caregiver devices immediately with high-priority sound + notification when a new SOS arrives
+    var alertsSeeded by remember(bundle.circle.id) { mutableStateOf(false) }
+    val seenSosAlertIds = remember(bundle.circle.id) { mutableSetOf<String>() }
+    LaunchedEffect(bundle.circle.id, bundle.alerts, roleMode) {
+        val currentAlerts = bundle.alerts
+        if (!alertsSeeded) {
+            currentAlerts.forEach { seenSosAlertIds.add(it.id) }
+            alertsSeeded = true
+        } else {
+            val newSosAlerts = currentAlerts.filter { alert ->
+                !alert.resolved && alert.type == "sos" && seenSosAlertIds.add(alert.id)
+            }
+            if (roleMode == RoleMode.CAREGIVER && newSosAlerts.isNotEmpty()) {
+                newSosAlerts.forEach { alert ->
+                    SosNotificationHelper.notifyFamilySosAlert(
+                        context = context,
+                        seniorName = bundle.circle.seniorName,
+                        message = alert.message,
+                        alertId = alert.id
+                    )
+                }
+            }
+        }
+    }
+
+    var previousRoleMode by remember { mutableStateOf(roleMode) }
+    LaunchedEffect(roleMode) {
+        if (previousRoleMode == RoleMode.CAREGIVER && roleMode == RoleMode.SENIOR) {
+            showAiAssistantScreen = false
+            GuideSessionCoordinator.startNewConversation()
+        }
+        previousRoleMode = roleMode
+    }
 
     LaunchedEffect(openLiveSignal) {
         if (openLiveSignal > 0) {
@@ -392,10 +493,18 @@ private fun CareCircleLoadedShell(
         }
     }
 
+    LaunchedEffect(openSafetyTabSignal) {
+        if (openSafetyTabSignal > 0) {
+            showAiAssistantScreen = false
+            currentTab = "safety"
+        }
+    }
+
     val mediaProjectionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            GeminiLiveManager.markConnectingPending(pendingVoiceName)
             GeminiLiveForegroundService.startWithScreenShare(
                 context = context,
                 resultCode = result.resultCode,
@@ -406,6 +515,7 @@ private fun CareCircleLoadedShell(
         } else {
             // Fall back cleanly to voice-only Live if user cancels system screen-share prompt
             if (!liveState.isActive) {
+                GeminiLiveManager.markConnectingPending(pendingVoiceName)
                 GeminiLiveForegroundService.startVoiceOnly(context, pendingVoiceName)
             }
             showGeminiLiveScreen = true
@@ -430,6 +540,7 @@ private fun CareCircleLoadedShell(
             if (pendingShareScreen) {
                 launchProjectionPrompt()
             } else {
+                GeminiLiveManager.markConnectingPending(pendingVoiceName)
                 GeminiLiveForegroundService.startVoiceOnly(context, pendingVoiceName)
                 showGeminiLiveScreen = true
             }
@@ -463,6 +574,7 @@ private fun CareCircleLoadedShell(
         } else if (shareScreen) {
             launchProjectionPrompt()
         } else {
+            GeminiLiveManager.markConnectingPending(voiceName)
             GeminiLiveForegroundService.startVoiceOnly(context, voiceName)
             showGeminiLiveScreen = true
         }
@@ -509,13 +621,40 @@ private fun CareCircleLoadedShell(
                 onUpdateCircleSettings = { sName, addr, lat, lng, eName, ePhone, newPin ->
                     viewModel.updateCircleSettings(bundle.circle, sName, addr, lat, lng, eName, ePhone, newPin)
                 },
+                observeAlertCaptures = { circleId, alertId ->
+                    viewModel.observeAlertCaptures(circleId, alertId)
+                },
                 modifier = Modifier.padding(padding)
             )
         }
         return
     }
 
+    val triggerQuickSosWithEvidence: () -> Unit = {
+        if (liveState.isCameraSharing) {
+            GeminiLiveManager.setCameraSharingActive(false)
+        }
+        viewModel.triggerSosWithCaptures(
+            circle = bundle.circle,
+            context = context,
+            activity = context as? Activity,
+            lifecycleOwner = lifecycleOwner
+        )
+    }
+
+    DisposableEffect(bundle.circle.id) {
+        GuideSessionCoordinator.registerQuickSosTrigger(triggerQuickSosWithEvidence)
+        onDispose {
+            GuideSessionCoordinator.registerQuickSosTrigger(null)
+        }
+    }
+
     if (showGeminiLiveScreen) {
+        LaunchedEffect(showGeminiLiveScreen) {
+            if (!liveState.isActive && liveState.phase != com.example.ai.LivePhase.CONNECTING) {
+                requestStartGeminiLive(liveState.selectedVoice, shareScreen = false)
+            }
+        }
         BackHandler {
             showGeminiLiveScreen = false
         }
@@ -523,6 +662,10 @@ private fun CareCircleLoadedShell(
             liveState = liveState,
             activeStep = activeStep,
             isAccessibilityConnected = isAccessibilityConnected,
+            isHighlightEnabled = isHighlightEnabled,
+            onToggleHighlight = { enabled ->
+                GuideSessionCoordinator.setHighlightEnabled(enabled)
+            },
             onMinimizeBack = { showGeminiLiveScreen = false },
             onStartLive = { voice, share ->
                 requestStartGeminiLive(voice, share)
@@ -557,11 +700,9 @@ private fun CareCircleLoadedShell(
             onManualInterrupt = { GeminiLiveManager.manualInterruptPrompt() },
             onSelectVoice = { voice ->
                 GeminiLiveManager.updateSelectedVoice(voice)
-                if (liveState.isActive) {
-                    scope.launch {
-                        snackbarHostState.showSnackbar("Voice set to $voice for your next Live session.")
-                    }
-                }
+            },
+            onSelectTone = { tone ->
+                GeminiLiveManager.updateTonePreset(tone)
             },
             onSendNudge = { text -> GeminiLiveManager.sendTextNudge(text) },
             onClearError = { GeminiLiveManager.clearError() }
@@ -569,13 +710,22 @@ private fun CareCircleLoadedShell(
         return
     }
 
-    BackHandler(enabled = currentTab != "home") {
+    BackHandler(enabled = showMedicationHistoryScreen) {
+        showMedicationHistoryScreen = false
+    }
+
+    BackHandler(enabled = !showMedicationHistoryScreen && showAiAssistantScreen) {
+        showAiAssistantScreen = false
+    }
+
+    BackHandler(enabled = !showMedicationHistoryScreen && !showAiAssistantScreen && currentTab != "home") {
+        showAiAssistantScreen = false
         currentTab = "home"
     }
 
     val tabs = remember {
         listOf(
-            SeniorTabItem("home", "Assistant", Icons.Filled.Assistant),
+            SeniorTabItem("home", "Home", Icons.Filled.Home),
             SeniorTabItem("tasks", "Tasks", Icons.Filled.TaskAlt),
             SeniorTabItem("family", "Family", Icons.Filled.PhotoLibrary),
             SeniorTabItem("safety", "Safety", Icons.Filled.Shield),
@@ -583,44 +733,65 @@ private fun CareCircleLoadedShell(
         )
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val useNavRail = maxWidth >= 600.dp
+    val isFullScreenAiChat = currentTab == "home" && showAiAssistantScreen
+
+    LiveScreenCoPilotOverlayHost(
+        liveState = liveState,
+        activeStep = activeStep,
+        stepMonitorBanner = stepMonitorBanner,
+        targetHighlightBounds = targetHighlightBounds,
+        isHighlightEnabled = isHighlightEnabled,
+        isAccessibilityConnected = isAccessibilityConnected,
+        showGeminiLiveScreen = showGeminiLiveScreen,
+        onOpenLiveScreen = { showGeminiLiveScreen = true },
+        onToggleHighlight = { GuideSessionCoordinator.toggleHighlightEnabled() },
+        onAdvanceStep = { GuideSessionCoordinator.advanceStepWithLiveScreen() },
+        onDismissGuidance = { GuideSessionCoordinator.clearGuideSession() }
+    ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val useNavRail = maxWidth >= 600.dp
 
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
             snackbarHost = { SnackbarHost(snackbarHostState) },
             topBar = {
-                TopAppBar(
-                    title = {
-                        Text(
-                            text = stringResource(R.string.app_name),
-                            style = MaterialTheme.typography.titleLarge
-                        )
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background
-                    ),
-                    actions = {
-                        OutlinedButton(
-                            onClick = { showPinDialog = true },
-                            modifier = Modifier
-                                .padding(end = 8.dp)
-                                .testTag("open_caregiver_pin_button")
-                        ) {
-                            Icon(Icons.Filled.Lock, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text(stringResource(R.string.family_view))
+                if (!isFullScreenAiChat) {
+                    TopAppBar(
+                        title = {
+                            Text(
+                                text = stringResource(R.string.app_name),
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background
+                        ),
+                        actions = {
+                            OutlinedButton(
+                                onClick = { showPinDialog = true },
+                                modifier = Modifier
+                                    .padding(end = 8.dp)
+                                    .testTag("open_caregiver_pin_button")
+                            ) {
+                                Icon(Icons.Filled.Lock, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text(stringResource(R.string.family_view))
+                            }
                         }
-                    }
-                )
+                    )
+                }
             },
             bottomBar = {
-                if (!useNavRail) {
+                if (!useNavRail && !isFullScreenAiChat) {
                     NavigationBar {
                         tabs.forEach { tab ->
                             NavigationBarItem(
                                 selected = currentTab == tab.id,
-                                onClick = { currentTab = tab.id },
+                                onClick = {
+                                    showAiAssistantScreen = false
+                                    showMedicationHistoryScreen = false
+                                    currentTab = tab.id
+                                },
                                 icon = { Icon(tab.icon, contentDescription = tab.label) },
                                 label = { Text(tab.label) },
                                 modifier = Modifier.testTag("nav_tab_${tab.id}")
@@ -635,12 +806,16 @@ private fun CareCircleLoadedShell(
                     .fillMaxSize()
                     .padding(padding)
             ) {
-                if (useNavRail) {
+                if (useNavRail && !isFullScreenAiChat) {
                     NavigationRail {
                         tabs.forEach { tab ->
                             NavigationRailItem(
                                 selected = currentTab == tab.id,
-                                onClick = { currentTab = tab.id },
+                                onClick = {
+                                    showAiAssistantScreen = false
+                                    showMedicationHistoryScreen = false
+                                    currentTab = tab.id
+                                },
                                 icon = { Icon(tab.icon, contentDescription = tab.label) },
                                 label = { Text(tab.label) },
                                 modifier = Modifier.testTag("rail_tab_${tab.id}")
@@ -651,61 +826,87 @@ private fun CareCircleLoadedShell(
 
                 Box(modifier = Modifier.weight(1f)) {
                     when (currentTab) {
-                        "home" -> SeniorHomeAndCoachScreen(
-                            bundle = bundle,
-                            liveState = liveState,
-                            activeStep = activeStep,
-                            lastReply = lastReply,
-                            streamingReply = streamingReply,
-                            isAiBusy = isAiBusy,
-                            aiError = aiError,
-                            crudBanner = crudBanner,
-                            isReadAloudEnabled = isReadAloud,
-                            isAccessibilityConnected = isAccessibilityConnected,
-                            isOverlayVisible = isOverlayVisible,
-                            onOpenGeminiLive = { shareScreen ->
-                                if (liveState.isActive && !shareScreen) {
-                                    showGeminiLiveScreen = true
-                                } else {
-                                    requestStartGeminiLive(liveState.selectedVoice, shareScreen)
+                        "home" -> if (!showAiAssistantScreen) {
+                            SeniorHomeDashboardScreen(
+                                bundle = bundle,
+                                sosProgress = sosProgress,
+                                onOpenAiAssistant = {
+                                    GuideSessionCoordinator.startNewConversation()
+                                    showAiAssistantScreen = true
+                                },
+                                onCompleteTask = { taskId ->
+                                    viewModel.toggleTask(bundle.circle, taskId, true)
+                                },
+                                onOpenTasksTab = {
+                                    showAiAssistantScreen = false
+                                    currentTab = "tasks"
+                                },
+                                onTriggerQuickSos = triggerQuickSosWithEvidence,
+                                onDismissSosStatus = { viewModel.dismissSosStatus() }
+                            )
+                        } else {
+                            SeniorHomeAndCoachScreen(
+                                bundle = bundle,
+                                activeConversationId = activeConversationId,
+                                liveState = liveState,
+                                activeStep = activeStep,
+                                lastReply = lastReply,
+                                streamingReply = streamingReply,
+                                isAiBusy = isAiBusy,
+                                aiError = aiError,
+                                crudBanner = crudBanner,
+                                isReadAloudEnabled = isReadAloud,
+                                isAccessibilityConnected = isAccessibilityConnected,
+                                isOverlayVisible = isOverlayVisible,
+                                onBackToHome = { showAiAssistantScreen = false },
+                                onStartNewConversation = { GuideSessionCoordinator.startNewConversation() },
+                                onSelectConversation = { GuideSessionCoordinator.selectConversation(it) },
+                                onOpenGeminiLive = { shareScreen ->
+                                    if (liveState.isActive && !shareScreen) {
+                                        showGeminiLiveScreen = true
+                                    } else {
+                                        requestStartGeminiLive(liveState.selectedVoice, shareScreen)
+                                    }
+                                },
+                                onOpenGeminiLiveCamera = {
+                                    if (liveState.isScreenSharing) {
+                                        GeminiLiveForegroundService.stopScreenShare(context)
+                                    }
+                                    if (!liveState.isActive) {
+                                        requestStartGeminiLive(liveState.selectedVoice, shareScreen = false)
+                                    } else {
+                                        showGeminiLiveScreen = true
+                                    }
+                                    GeminiLiveManager.setCameraSharingActive(true)
+                                },
+                                onStopGeminiLive = {
+                                    GeminiLiveForegroundService.stopAll(context)
+                                },
+                                onNavigateTab = { targetTab ->
+                                    showAiAssistantScreen = false
+                                    currentTab = targetTab
+                                },
+                                onToggleMedication = { medId, taken ->
+                                    viewModel.toggleMedicationTaken(bundle.circle, medId, taken)
+                                },
+                                onSendCheckIn = { mood ->
+                                    viewModel.sendCheckIn(bundle.circle, mood)
+                                },
+                                onTriggerSos = triggerQuickSosWithEvidence,
+                                onLaunchTakeMeHome = {
+                                    val navUri = Uri.parse(
+                                        "google.navigation:q=${bundle.circle.homeLat},${bundle.circle.homeLng}&mode=w"
+                                    )
+                                    val navIntent = Intent(Intent.ACTION_VIEW, navUri).apply {
+                                        setPackage("com.google.android.apps.maps")
+                                    }
+                                    runCatching { context.startActivity(navIntent) }.onFailure {
+                                        showAiAssistantScreen = false
+                                        currentTab = "safety"
+                                    }
                                 }
-                            },
-                            onOpenGeminiLiveCamera = {
-                                if (liveState.isScreenSharing) {
-                                    GeminiLiveForegroundService.stopScreenShare(context)
-                                }
-                                if (!liveState.isActive) {
-                                    requestStartGeminiLive(liveState.selectedVoice, shareScreen = false)
-                                } else {
-                                    showGeminiLiveScreen = true
-                                }
-                                GeminiLiveManager.setCameraSharingActive(true)
-                            },
-                            onStopGeminiLive = {
-                                GeminiLiveForegroundService.stopAll(context)
-                            },
-                            onNavigateTab = { currentTab = it },
-                            onToggleMedication = { medId, taken ->
-                                viewModel.toggleMedicationTaken(bundle.circle, medId, taken)
-                            },
-                            onSendCheckIn = { mood ->
-                                viewModel.sendCheckIn(bundle.circle, mood)
-                            },
-                            onTriggerSos = {
-                                viewModel.triggerSosAlert(bundle.circle)
-                            },
-                            onLaunchTakeMeHome = {
-                                val navUri = Uri.parse(
-                                    "google.navigation:q=${bundle.circle.homeLat},${bundle.circle.homeLng}&mode=w"
-                                )
-                                val navIntent = Intent(Intent.ACTION_VIEW, navUri).apply {
-                                    setPackage("com.google.android.apps.maps")
-                                }
-                                runCatching { context.startActivity(navIntent) }.onFailure {
-                                    currentTab = "safety"
-                                }
-                            }
-                        )
+                            )
+                        }
 
                         "tasks" -> TasksAndCalendarScreen(
                             tasks = bundle.tasks,
@@ -736,29 +937,75 @@ private fun CareCircleLoadedShell(
                             onDeleteVoiceNote = { viewModel.deleteVoiceNote(bundle.circle, it) }
                         )
 
-                        "safety" -> SafetyAndMapScreen(
-                            circle = bundle.circle,
-                            medications = bundle.medications,
-                            safePlaces = bundle.safePlaces,
-                            scamState = scamState,
-                            currentLocation = currentLocation,
-                            onLocationUpdated = { lat, lng -> viewModel.updateCurrentLocation(lat, lng) },
-                            onToggleMedication = { medId, taken ->
-                                viewModel.toggleMedicationTaken(bundle.circle, medId, taken)
-                            },
-                            onAddMedication = { name, dosage, slot ->
-                                viewModel.addMedication(bundle.circle, name, dosage, slot)
-                            },
-                            onDeleteMedication = { viewModel.deleteMedication(bundle.circle, it) },
-                            onAddSafePlace = { label, cat, addr, lat, lng ->
-                                viewModel.addSafePlace(bundle.circle, label, cat, addr, lat, lng)
-                            },
-                            onDeleteSafePlace = { viewModel.deleteSafePlace(bundle.circle, it) },
-                            onCheckScam = { text, bmp -> viewModel.analyzeScam(bundle.circle, text, bmp) },
-                            onResetScam = { viewModel.resetScamCheck() },
-                            onSendCheckIn = { mood -> viewModel.sendCheckIn(bundle.circle, mood) },
-                            onTriggerSos = { viewModel.triggerSosAlert(bundle.circle) }
-                        )
+                        "safety" -> if (showMedicationHistoryScreen) {
+                            MedicationHistoryScreen(
+                                historyEntries = medicationHistory,
+                                dateRange = historyDateRange,
+                                onSelectDateRange = { viewModel.updateHistoryDateRange(it) },
+                                onMarkEntryTaken = { entryId ->
+                                    viewModel.markHistoryEntryTaken(bundle.circle, entryId)
+                                },
+                                onRefreshMissedCheck = { viewModel.refreshMedicationHistory() },
+                                onBack = { showMedicationHistoryScreen = false },
+                                weeklyHistoryEntries = weeklyMedicationHistory
+                            )
+                        } else {
+                            SafetyAndMapScreen(
+                                circle = bundle.circle,
+                                medications = bundle.medications,
+                                safePlaces = bundle.safePlaces,
+                                scamState = scamState,
+                                currentLocation = currentLocation,
+                                onLocationUpdated = { lat, lng -> viewModel.updateCurrentLocation(lat, lng) },
+                                onToggleMedication = { medId, taken ->
+                                    viewModel.toggleMedicationTaken(bundle.circle, medId, taken)
+                                },
+                                onAddMedication = { name, dosage, slot ->
+                                    viewModel.addMedication(bundle.circle, name, dosage, slot)
+                                },
+                                onDeleteMedication = { viewModel.deleteMedication(bundle.circle, it) },
+                                onAddSafePlace = { label, cat, addr, lat, lng ->
+                                    viewModel.addSafePlace(bundle.circle, label, cat, addr, lat, lng)
+                                },
+                                onDeleteSafePlace = { viewModel.deleteSafePlace(bundle.circle, it) },
+                                onCheckScam = { text, bmp -> viewModel.analyzeScam(bundle.circle, text, bmp) },
+                                onResetScam = { viewModel.resetScamCheck() },
+                                onSendCheckIn = { mood -> viewModel.sendCheckIn(bundle.circle, mood) },
+                                onTriggerSos = triggerQuickSosWithEvidence,
+                                localSchedules = localMedicationSchedules,
+                                onAddMedicationWithSchedule = { name, dosage, slot, hour, minute, enabled ->
+                                    viewModel.addMedication(
+                                        circle = bundle.circle,
+                                        name = name,
+                                        dosage = dosage,
+                                        slot = slot,
+                                        reminderHour = hour,
+                                        reminderMinute = minute,
+                                        reminderEnabled = enabled
+                                    )
+                                },
+                                onUpdateMedicationReminder = { id, enabled, hour, minute ->
+                                    viewModel.updateMedicationReminder(id, enabled, hour, minute)
+                                },
+                                onUpdateMedicationSchedule = { id, dosage, enabled, hour, minute ->
+                                    viewModel.updateMedicationSchedule(
+                                        circle = bundle.circle,
+                                        scheduleId = id,
+                                        dosage = dosage,
+                                        enabled = enabled,
+                                        hour = hour,
+                                        minute = minute
+                                    )
+                                },
+                                onTestMedicationReminder = { schedule ->
+                                    viewModel.triggerMedicationReminderNow(schedule)
+                                },
+                                onOpenMedicationHistory = {
+                                    viewModel.refreshMedicationHistory()
+                                    showMedicationHistoryScreen = true
+                                }
+                            )
+                        }
 
                         "joy" -> DailyJoyScreen(
                             engagementState = engagementState,
@@ -779,5 +1026,6 @@ private fun CareCircleLoadedShell(
                 }
             }
         }
+    }
     }
 }

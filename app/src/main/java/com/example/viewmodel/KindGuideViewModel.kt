@@ -1,16 +1,28 @@
 package com.example.viewmodel
 
+import android.app.Activity
+import android.content.Context
 import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.DailyEngagementContent
 import com.example.ai.GuideSessionCoordinator
 import com.example.ai.KindGuideAiService
+import com.example.data.local.MedicationHistoryEntity
+import com.example.data.local.MedicationScheduleEntity
+import com.example.data.local.MedicationScheduleRepository
 import com.example.data.model.CareCircle
+import com.example.data.model.SosCaptureItem
 import com.example.data.model.sha256Hex
 import com.example.data.repository.KindGuideRepository
+import com.example.notifications.MedicationNotificationManager
+import com.example.safety.SosCaptureManager
+import com.example.safety.SosCaptureProgress
+import com.example.ui.screens.MedicationDateRangePreset
+import com.example.ui.screens.MedicationDateRangeSelection
 import com.example.ui.state.CircleDashboardBundle
 import com.example.ui.state.DataUiState
 import com.example.ui.state.EngagementUiState
@@ -19,6 +31,7 @@ import com.example.ui.state.ScamUiState
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -38,8 +51,47 @@ class KindGuideViewModel(
     private val repository: KindGuideRepository,
     private val aiService: KindGuideAiService,
     private val currentUserId: String,
-    private val userDisplayName: String
+    private val userDisplayName: String,
+    private val medicationScheduleRepository: MedicationScheduleRepository? = null,
+    private val appContext: Context? = null
 ) : ViewModel() {
+
+    val localMedicationSchedules: StateFlow<List<MedicationScheduleEntity>> =
+        (medicationScheduleRepository?.allSchedules ?: flowOf(emptyList()))
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5000L),
+                initialValue = emptyList()
+            )
+
+    private val _historyDateRange = MutableStateFlow(
+        MedicationDateRangeSelection.fromPreset(MedicationDateRangePreset.LAST_7_DAYS)
+    )
+    val historyDateRange: StateFlow<MedicationDateRangeSelection> = _historyDateRange.asStateFlow()
+
+    val medicationHistory: StateFlow<List<MedicationHistoryEntity>> = _historyDateRange
+        .flatMapLatest { range ->
+            medicationScheduleRepository?.observeHistoryInRange(range.startMillis, range.endMillis)
+                ?: flowOf(emptyList())
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000L),
+            initialValue = emptyList()
+        )
+
+    private val _weeklyWindowTick = MutableStateFlow(0L)
+    val weeklyMedicationHistory: StateFlow<List<MedicationHistoryEntity>> = _weeklyWindowTick
+        .flatMapLatest {
+            val weekRange = MedicationDateRangeSelection.fromPreset(MedicationDateRangePreset.LAST_7_DAYS)
+            medicationScheduleRepository?.observeHistoryInRange(weekRange.startMillis, weekRange.endMillis)
+                ?: flowOf(emptyList())
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000L),
+            initialValue = emptyList()
+        )
 
     private val _roleMode = MutableStateFlow(RoleMode.SENIOR)
     val roleMode: StateFlow<RoleMode> = _roleMode.asStateFlow()
@@ -62,8 +114,12 @@ class KindGuideViewModel(
     private val _brainGamesWon = MutableStateFlow(0)
     val brainGamesWon: StateFlow<Int> = _brainGamesWon.asStateFlow()
 
+    private val _sosProgress = MutableStateFlow(SosCaptureProgress())
+    val sosProgress: StateFlow<SosCaptureProgress> = _sosProgress.asStateFlow()
+
     private val _selectedCircleIndex = MutableStateFlow(0)
     private var lastSyncedMemberHash: String = ""
+    private var lastSyncedMedsSignature: String = ""
 
     val circlesState: StateFlow<DataUiState<List<CareCircle>>> = repository.observeCareCircles(currentUserId)
         .map<List<CareCircle>, DataUiState<List<CareCircle>>> { DataUiState.Success(it) }
@@ -134,10 +190,13 @@ class KindGuideViewModel(
                         }
 
                         combine(baseFlows, extraFlows) { a, b ->
-                            GuideSessionCoordinator.currentTasks = a.tasks
-                            GuideSessionCoordinator.currentEvents = a.events
-                            GuideSessionCoordinator.currentMedications = a.medications
-                            GuideSessionCoordinator.currentHistory = b.conversations
+                            GuideSessionCoordinator.syncBundle(
+                                circle = circle,
+                                tasks = a.tasks,
+                                events = a.events,
+                                medications = a.medications,
+                                allConversations = b.conversations
+                            )
 
                             CircleDashboardBundle(
                                 circle = circle,
@@ -165,7 +224,27 @@ class KindGuideViewModel(
                 }
             }
         }
-        .onEach { }
+        .onEach { state ->
+            val bundle = (state as? DataUiState.Success)?.data
+            val medRepo = medicationScheduleRepository
+            if (bundle != null && medRepo != null) {
+                val medsSig = bundle.circle.id + "|" + bundle.medications.joinToString(";") {
+                    "${it.id}:${it.name}:${it.dosage}:${it.scheduleSlot}:${it.takenToday}"
+                }
+                if (medsSig != lastSyncedMedsSignature) {
+                    lastSyncedMedsSignature = medsSig
+                    viewModelScope.launch {
+                        val synced = medRepo.syncFromCareCircleMedications(
+                            circleId = bundle.circle.id,
+                            medications = bundle.medications
+                        )
+                        appContext?.let { ctx ->
+                            MedicationNotificationManager.syncDailyReminders(ctx, synced)
+                        }
+                    }
+                }
+            }
+        }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000L),
@@ -309,17 +388,151 @@ class KindGuideViewModel(
         }
     }
 
-    fun addMedication(circle: CareCircle, name: String, dosage: String, slot: String) {
+    fun addMedication(
+        circle: CareCircle,
+        name: String,
+        dosage: String,
+        slot: String,
+        reminderHour: Int? = null,
+        reminderMinute: Int? = null,
+        reminderEnabled: Boolean = true
+    ) {
         if (name.isBlank()) return
         viewModelScope.launch {
             repository.createMedication(circle.id, circle.memberUids, name, dosage, slot)
-                .onSuccess { _actionMessage.value = "Medication reminder added." }
+                .onSuccess { medId ->
+                    val medRepo = medicationScheduleRepository
+                    if (medRepo != null) {
+                        val saved = medRepo.createOrUpdateSchedule(
+                            id = medId,
+                            circleId = circle.id,
+                            name = name,
+                            dosage = dosage,
+                            scheduleSlot = slot,
+                            reminderHour = reminderHour,
+                            reminderMinute = reminderMinute,
+                            reminderEnabled = reminderEnabled,
+                            takenToday = false
+                        )
+                        appContext?.let { ctx ->
+                            MedicationNotificationManager.scheduleDailyReminder(ctx, saved)
+                        }
+                        _actionMessage.value = if (reminderEnabled) {
+                            "Medication saved with daily ${saved.formattedReminderTime()} reminder."
+                        } else {
+                            "Medication saved to local schedule."
+                        }
+                    } else {
+                        _actionMessage.value = "Medication reminder added."
+                    }
+                }
                 .onFailure { _actionMessage.value = it.localizedMessage ?: "Failed to add medication." }
+        }
+    }
+
+    fun updateMedicationReminder(
+        scheduleId: String,
+        enabled: Boolean,
+        hour: Int,
+        minute: Int
+    ) {
+        viewModelScope.launch {
+            val updated = medicationScheduleRepository?.updateReminderSettings(
+                id = scheduleId,
+                enabled = enabled,
+                hour = hour,
+                minute = minute
+            )
+            if (updated != null) {
+                appContext?.let { ctx ->
+                    MedicationNotificationManager.scheduleDailyReminder(ctx, updated)
+                }
+                _actionMessage.value = if (enabled) {
+                    "Daily reminder set for ${updated.formattedReminderTime()}."
+                } else {
+                    "Daily reminder paused for ${updated.name}."
+                }
+            }
+        }
+    }
+
+    fun updateMedicationSchedule(
+        circle: CareCircle?,
+        scheduleId: String,
+        dosage: String,
+        enabled: Boolean,
+        hour: Int,
+        minute: Int
+    ) {
+        viewModelScope.launch {
+            val cleanDosage = dosage.trim().take(60)
+            val updated = medicationScheduleRepository?.updateScheduleDetails(
+                id = scheduleId,
+                dosage = cleanDosage,
+                enabled = enabled,
+                hour = hour,
+                minute = minute
+            )
+            if (circle != null && cleanDosage.isNotBlank()) {
+                repository.updateMedication(
+                    circle.id,
+                    scheduleId,
+                    mapOf("dosage" to cleanDosage)
+                )
+            }
+            if (updated != null) {
+                appContext?.let { ctx ->
+                    MedicationNotificationManager.scheduleDailyReminder(ctx, updated)
+                }
+                _actionMessage.value = if (enabled) {
+                    "Updated ${updated.name} (${updated.formattedDosage()}) • ${updated.formattedReminderTime()}."
+                } else {
+                    "Updated ${updated.name} (${updated.formattedDosage()}) • reminder paused."
+                }
+            }
+        }
+    }
+
+    fun triggerMedicationReminderNow(schedule: MedicationScheduleEntity) {
+        val ctx = appContext ?: return
+        val posted = MedicationNotificationManager.showMedicationReminderNotification(ctx, schedule)
+        _actionMessage.value = if (posted) {
+            "Daily reminder notification sent for ${schedule.name}."
+        } else {
+            "Allow notification permission to show daily reminders."
+        }
+    }
+
+    fun updateHistoryDateRange(selection: MedicationDateRangeSelection) {
+        _historyDateRange.value = selection
+    }
+
+    fun refreshMedicationHistory() {
+        _weeklyWindowTick.value = System.currentTimeMillis()
+        viewModelScope.launch {
+            medicationScheduleRepository?.reconcileMissedDoses()
+        }
+    }
+
+    fun markHistoryEntryTaken(circle: CareCircle, entryId: String) {
+        viewModelScope.launch {
+            val updated = medicationScheduleRepository?.markHistoryEntryTaken(entryId)
+            if (updated != null) {
+                if (updated.dateKey == MedicationHistoryEntity.formatDateKey(System.currentTimeMillis())) {
+                    repository.updateMedication(
+                        circle.id,
+                        updated.scheduleId,
+                        mapOf("takenToday" to true, "lastTakenLabel" to "Taken today")
+                    )
+                }
+                _actionMessage.value = "Marked ${updated.medicationName} as taken."
+            }
         }
     }
 
     fun toggleMedicationTaken(circle: CareCircle, medId: String, taken: Boolean) {
         viewModelScope.launch {
+            medicationScheduleRepository?.setTakenToday(medId, taken)
             val label = if (taken) "Taken today" else "Not taken yet today"
             repository.updateMedication(
                 circle.id,
@@ -331,6 +544,10 @@ class KindGuideViewModel(
 
     fun deleteMedication(circle: CareCircle, medId: String) {
         viewModelScope.launch {
+            medicationScheduleRepository?.deleteSchedule(medId)
+            appContext?.let { ctx ->
+                MedicationNotificationManager.cancelReminder(ctx, medId)
+            }
             repository.deleteMedication(circle.id, medId)
         }
     }
@@ -447,6 +664,134 @@ class KindGuideViewModel(
         }
     }
 
+    fun triggerSosWithCaptures(
+        circle: CareCircle,
+        context: Context,
+        activity: Activity?,
+        lifecycleOwner: LifecycleOwner
+    ) {
+        if (_sosProgress.value.isActive) return
+        val loc = _currentLocation.value
+        val lat = loc?.first ?: circle.homeLat
+        val lng = loc?.second ?: circle.homeLng
+        val appContext = context.applicationContext
+
+        viewModelScope.launch {
+            _sosProgress.value = SosCaptureProgress(
+                isActive = true,
+                isCompleted = false,
+                completedCount = 0,
+                totalCount = 7,
+                statusLabel = "Sending SOS alert to family..."
+            )
+
+            val alertResult = repository.createAlert(
+                circleId = circle.id,
+                memberUids = circle.memberUids,
+                type = "sos",
+                message = "Urgent SOS from ${circle.seniorName}! Capturing screen & front/back safety photos.",
+                latitude = lat,
+                longitude = lng
+            )
+
+            val alertId = alertResult.getOrNull()
+            if (alertId == null) {
+                val err = alertResult.exceptionOrNull()?.localizedMessage ?: "Could not send SOS alert."
+                _sosProgress.value = SosCaptureProgress()
+                _actionMessage.value = err
+                return@launch
+            }
+
+            _actionMessage.value = "SOS Alert sent to Family! Capturing visual evidence..."
+            var uploadedCount = 0
+
+            _sosProgress.value = SosCaptureProgress(
+                isActive = true,
+                completedCount = 0,
+                totalCount = 7,
+                statusLabel = "Capturing screen (1/7)...",
+                lastAlertId = alertId
+            )
+
+            // 1. Capture Screenshot (1/7)
+            val screenshotBase64 = runCatching {
+                SosCaptureManager.captureCurrentScreenBase64(activity)
+            }.getOrNull()
+            if (!screenshotBase64.isNullOrBlank()) {
+                val res = repository.addAlertCapture(
+                    circleId = circle.id,
+                    alertId = alertId,
+                    memberUids = circle.memberUids,
+                    source = "screenshot",
+                    sequenceIndex = 1L,
+                    imageBase64 = screenshotBase64
+                )
+                if (res.isSuccess) {
+                    uploadedCount += 1
+                    _sosProgress.value = _sosProgress.value.copy(
+                        completedCount = uploadedCount,
+                        statusLabel = "Screenshot sent ($uploadedCount/7)"
+                    )
+                }
+            }
+
+            // 2. Capture 3 Front + 3 Back Camera Photos Sequentially (2..7/7)
+            runCatching {
+                SosCaptureManager.captureFrontAndBackBursts(
+                    context = appContext,
+                    lifecycleOwner = lifecycleOwner,
+                    onStatus = { label ->
+                        _sosProgress.value = _sosProgress.value.copy(statusLabel = label)
+                    },
+                    onCapturedFrame = { source, seqIndex, base64 ->
+                        val res = repository.addAlertCapture(
+                            circleId = circle.id,
+                            alertId = alertId,
+                            memberUids = circle.memberUids,
+                            source = source,
+                            sequenceIndex = seqIndex,
+                            imageBase64 = base64
+                        )
+                        if (res.isSuccess) {
+                            uploadedCount += 1
+                            _sosProgress.value = _sosProgress.value.copy(
+                                completedCount = uploadedCount,
+                                statusLabel = "Uploading safety photos ($uploadedCount/7)..."
+                            )
+                        }
+                    }
+                )
+            }
+
+            _sosProgress.value = SosCaptureProgress(
+                isActive = false,
+                isCompleted = true,
+                completedCount = uploadedCount,
+                totalCount = 7,
+                statusLabel = if (uploadedCount > 0) {
+                    "SOS sent • $uploadedCount/7 captures shared"
+                } else {
+                    "SOS alert sent to family"
+                },
+                lastAlertId = alertId
+            )
+
+            com.example.ai.GeminiLiveManager.ensureMicrophoneActiveAfterCameraOrSos()
+            if (com.example.ai.GeminiLiveManager.state.value.isActive) {
+                com.example.ai.GeminiLiveManager.notifyUserScreenAction(
+                    "[QUICK SOS COMPLETED] The Quick SOS alert and $uploadedCount safety captures have been sent to ${circle.seniorName}'s Family Caregiver Dashboard. Reassure ${circle.seniorName} warmly in 1 short sentence that their family has been alerted and you are right here with them."
+                )
+            }
+        }
+    }
+
+    fun dismissSosStatus() {
+        _sosProgress.value = SosCaptureProgress()
+    }
+
+    fun observeAlertCaptures(circleId: String, alertId: String): Flow<List<SosCaptureItem>> =
+        repository.observeAlertCaptures(circleId, alertId, currentUserId)
+
     fun resolveAlert(circle: CareCircle, alertId: String) {
         viewModelScope.launch {
             repository.resolveAlert(circle.id, alertId, true)
@@ -458,9 +803,18 @@ class KindGuideViewModel(
         viewModelScope.launch {
             _scamState.value = ScamUiState.Loading
             try {
-                val result = aiService.checkForScam(messageText, screenshot)
+                val result = aiService.checkForScam(
+                    messageText = messageText,
+                    screenshot = screenshot,
+                    onPartialUpdate = { preview ->
+                        _scamState.value = ScamUiState.Streaming(preview)
+                    }
+                )
                 _scamState.value = ScamUiState.Result(result)
-                GuideSessionCoordinator.speakText("${result.verdict}. ${result.headline}. ${result.recommendedAction}")
+                GuideSessionCoordinator.speakText(
+                    text = "${result.verdict}. ${result.headline}. ${result.explanation} ${result.recommendedAction}",
+                    messageId = "scam_result"
+                )
                 if (circle != null && result.verdict != "Safe") {
                     repository.createAlert(
                         circleId = circle.id,
@@ -473,7 +827,9 @@ class KindGuideViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Scam check error", e)
-                _scamState.value = ScamUiState.Error(e.localizedMessage ?: "Could not check message.")
+                val errMsg = e.localizedMessage ?: "Could not check message."
+                _scamState.value = ScamUiState.Error(errMsg)
+                GuideSessionCoordinator.speakText(errMsg, messageId = "scam_error")
             }
         }
     }
@@ -485,16 +841,96 @@ class KindGuideViewModel(
     fun generateDailyEngagement(themeHint: String = "family gardens, music, and friendly neighborhood memories") {
         viewModelScope.launch {
             _engagementState.value = EngagementUiState.Loading
+            var spokenBodyIdx = 0
+            var hasSpokenAnyChunk = false
+            var spokenTitle = false
+            val storySpeechId = "daily_story"
             try {
-                val content = aiService.generateDailyEngagement(themeHint)
+                val content = aiService.generateDailyEngagement(
+                    themeHint = themeHint,
+                    onPartialUpdate = { partialTitle, partialStory ->
+                        _engagementState.value = EngagementUiState.Streaming(
+                            partialTitle = partialTitle,
+                            partialStory = partialStory
+                        )
+                        if (GuideSessionCoordinator.voiceReadAloudEnabled.value &&
+                            !com.example.ai.GeminiLiveManager.state.value.isActive
+                        ) {
+                            if (!spokenTitle && partialTitle.isNotBlank() && partialStory.isNotBlank()) {
+                                spokenTitle = true
+                                GuideSessionCoordinator.speakStreamedChunk(
+                                    text = "$partialTitle.",
+                                    messageId = storySpeechId,
+                                    isFirstChunk = !hasSpokenAnyChunk
+                                )
+                                hasSpokenAnyChunk = true
+                            }
+                            if (partialStory.isNotBlank()) {
+                                val (ready, nextIdx) = GuideSessionCoordinator.extractReadySpeechSentences(
+                                    fullText = partialStory,
+                                    spokenUpToIndex = spokenBodyIdx,
+                                    flushRemaining = false
+                                )
+                                spokenBodyIdx = nextIdx
+                                ready.forEach { chunk ->
+                                    GuideSessionCoordinator.speakStreamedChunk(
+                                        text = chunk,
+                                        messageId = storySpeechId,
+                                        isFirstChunk = !hasSpokenAnyChunk
+                                    )
+                                    hasSpokenAnyChunk = true
+                                }
+                            }
+                        }
+                    }
+                )
                 _engagementState.value = EngagementUiState.Ready(content)
+                if (GuideSessionCoordinator.voiceReadAloudEnabled.value) {
+                    if (com.example.ai.GeminiLiveManager.state.value.isActive) {
+                        GuideSessionCoordinator.speakText(
+                            "${content.storyTitle}. ${content.storyBody}. ${content.reminisceQuestion}",
+                            messageId = storySpeechId
+                        )
+                    } else {
+                        if (!spokenTitle && content.storyTitle.isNotBlank()) {
+                            spokenTitle = true
+                            GuideSessionCoordinator.speakStreamedChunk(
+                                text = "${content.storyTitle}.",
+                                messageId = storySpeechId,
+                                isFirstChunk = !hasSpokenAnyChunk
+                            )
+                            hasSpokenAnyChunk = true
+                        }
+                        val (tail, _) = GuideSessionCoordinator.extractReadySpeechSentences(
+                            fullText = content.storyBody,
+                            spokenUpToIndex = spokenBodyIdx,
+                            flushRemaining = true
+                        )
+                        tail.forEach { chunk ->
+                            GuideSessionCoordinator.speakStreamedChunk(
+                                text = chunk,
+                                messageId = storySpeechId,
+                                isFirstChunk = !hasSpokenAnyChunk
+                            )
+                            hasSpokenAnyChunk = true
+                        }
+                        if (content.reminisceQuestion.isNotBlank()) {
+                            GuideSessionCoordinator.speakStreamedChunk(
+                                text = content.reminisceQuestion,
+                                messageId = storySpeechId,
+                                isFirstChunk = !hasSpokenAnyChunk
+                            )
+                            hasSpokenAnyChunk = true
+                        }
+                    }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Engagement error", e)
-                _engagementState.value = EngagementUiState.Error(
-                    e.localizedMessage ?: "Could not load today's story."
-                )
+                val errMsg = e.localizedMessage ?: "Could not load today's story."
+                _engagementState.value = EngagementUiState.Error(errMsg)
+                GuideSessionCoordinator.speakText(errMsg, messageId = "engagement_error")
             }
         }
     }
